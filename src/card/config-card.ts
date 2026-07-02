@@ -18,6 +18,7 @@ export interface ConfigFormOpts {
   larkCliIdentity: LarkCliIdentityPreset;
   allowedUsers: string[];
   allowedChats: string[];
+  chatPolicies: Record<string, { requireMention?: boolean }>;
   admins: string[];
   knownChats: KnownChat[];
 }
@@ -57,8 +58,16 @@ function chatList(chatIds: string[], knownChats: KnownChat[]): string {
     .join('\n');
 }
 
+function noAtChatIds(chatPolicies: ConfigFormOpts['chatPolicies']): string[] {
+  return Object.entries(chatPolicies)
+    .filter(([, policy]) => policy.requireMention === false)
+    .map(([chatId]) => chatId)
+    .sort();
+}
+
 /** Form card for `/config`. */
 export function configFormCard(opts: ConfigFormOpts): object {
+  const noAtChats = noAtChatIds(opts.chatPolicies);
   const accessElements: object[] = [
     {
       tag: 'markdown',
@@ -78,8 +87,11 @@ export function configFormCard(opts: ConfigFormOpts): object {
       content:
         `**允许响应的群**（共 ${opts.allowedChats.length} 个）\n` +
         `${chatList(opts.allowedChats, opts.knownChats)}\n\n` +
+        `**不 @ 也响应的群**（共 ${noAtChats.length} 个）\n` +
+        `${chatList(noAtChats, opts.knownChats)}\n\n` +
         '_一键加全部 bot 所在的群：_ `/invite all group`\n' +
-        '_加 / 删（在目标群里发）：_ `/invite group`  `/remove group`',
+        '_加 / 删（在目标群里发）：_ `/invite group`  `/remove group`\n' +
+        '_当前群不 @ 也响应：_ `/invite group no-at`  `/remove group no-at`',
     },
     { tag: 'hr' },
     {
@@ -291,6 +303,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
         : '纯文本';
   const summarize = (list: string[]): string =>
     list.length === 0 ? '_(空)_' : `${list.length} 项`;
+  const noAtChats = noAtChatIds(opts.chatPolicies);
   const cotLabel = cotMessagesLabel(opts.cotMessages);
   return {
     schema: '2.0',
@@ -312,6 +325,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             '🔒 **访问控制**\n' +
             `**允许私聊的用户**:${summarize(opts.allowedUsers)}\n` +
             `**允许响应的群**:${summarize(opts.allowedChats)}\n` +
+            `**不 @ 也响应的群**:${summarize(noAtChats)}\n` +
             `**管理员**:${summarize(opts.admins)}\n\n` +
             '下条消息开始生效。',
         },

@@ -290,6 +290,7 @@ describe('Bridge command contracts', () => {
     expect(root?.profiles.claude?.access.allowedUsers).toContain('ou-alice');
     expect(root?.profiles.claude?.access.admins).toEqual(['ou-admin', 'ou-bob']);
     expect(root?.profiles.claude?.access.allowedChats).toContain('oc-group-1');
+    expect(root?.profiles.claude?.access.chatPolicies).not.toHaveProperty('oc-group-1');
     expect(root?.profiles.claude?.preferences).not.toHaveProperty('access');
 
     await expect(
@@ -297,6 +298,172 @@ describe('Bridge command contracts', () => {
     ).resolves.toBe(true);
     root = await loadRootConfig(h.controls.configPath);
     expect(root?.profiles.claude?.access.allowedUsers).not.toContain('ou-alice');
+  });
+
+  it('manages current-group no-at policy through /invite and /remove group flags', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('/invite group no-at', {
+        chatId: 'oc-group-1',
+        scope: 'oc-group-1',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    let root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toContain('oc-group-1');
+    expect(root?.profiles.claude?.access.chatPolicies).toMatchObject({
+      'oc-group-1': { requireMention: false },
+    });
+    expect(lastMarkdown(h.channel)).toContain('不 @');
+
+    await expect(
+      h.run('/remove group no-at', {
+        chatId: 'oc-group-1',
+        scope: 'oc-group-1',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toContain('oc-group-1');
+    expect(root?.profiles.claude?.access.chatPolicies['oc-group-1']).toBeUndefined();
+
+    await expect(
+      h.run('/invite group 免@', {
+        chatId: 'oc-group-cn',
+        scope: 'oc-group-cn',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.chatPolicies).toMatchObject({
+      'oc-group-cn': { requireMention: false },
+    });
+
+    await expect(
+      h.run('/remove group', {
+        chatId: 'oc-group-cn',
+        scope: 'oc-group-cn',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).not.toContain('oc-group-cn');
+    expect(root?.profiles.claude?.access.chatPolicies['oc-group-cn']).toBeUndefined();
+  });
+
+  it('enables no-at for a group that is already allowed', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('/invite group', {
+        chatId: 'oc-already-allowed',
+        scope: 'oc-already-allowed',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    await expect(
+      h.run('/invite group no-at', {
+        chatId: 'oc-already-allowed',
+        scope: 'oc-already-allowed',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toContain('oc-already-allowed');
+    expect(root?.profiles.claude?.access.chatPolicies).toMatchObject({
+      'oc-already-allowed': { requireMention: false },
+    });
+    expect(lastMarkdown(h.channel)).toContain('不 @');
+    expect(lastMarkdown(h.channel)).not.toContain('无需重复添加');
+  });
+
+  it('treats no-at lookalike modifiers as no-at instead of removing the group', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('/invite group no-at', {
+        chatId: 'oc-lookalike',
+        scope: 'oc-lookalike',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    await expect(
+      h.run('/remove group no‑at', {
+        chatId: 'oc-lookalike',
+        scope: 'oc-lookalike',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toContain('oc-lookalike');
+    expect(root?.profiles.claude?.access.chatPolicies['oc-lookalike']).toBeUndefined();
+    expect(lastMarkdown(h.channel)).toContain('已关闭当前群的不 @');
+  });
+
+  it('does not remove a group when /remove group has an unknown modifier', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('/invite group', {
+        chatId: 'oc-unknown-modifier',
+        scope: 'oc-unknown-modifier',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    await expect(
+      h.run('/remove group not-no-at', {
+        chatId: 'oc-unknown-modifier',
+        scope: 'oc-unknown-modifier',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toContain('oc-unknown-modifier');
+    expect(lastMarkdown(h.channel)).toContain('用法');
+  });
+
+  it('does not remove strict per-chat policy with /remove group no-at', async () => {
+    const h = await createHarness();
+    const root = await loadRootConfig(h.controls.configPath);
+    const profile = root?.profiles.claude;
+    expect(root).toBeTruthy();
+    expect(profile).toBeTruthy();
+    profile!.access = {
+      ...profile!.access,
+      allowedChats: ['oc-strict'],
+      requireMentionInGroup: false,
+      chatPolicies: {
+        ...profile!.access.chatPolicies,
+        'oc-strict': { requireMention: true },
+      },
+    };
+    await saveRootConfig(root!, h.controls.configPath);
+
+    await expect(
+      h.run('/remove group no-at', {
+        chatId: 'oc-strict',
+        scope: 'oc-strict',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    const next = await loadRootConfig(h.controls.configPath);
+    expect(next?.profiles.claude?.access.allowedChats).toContain('oc-strict');
+    expect(next?.profiles.claude?.access.chatPolicies['oc-strict']).toEqual({
+      requireMention: true,
+    });
+    expect(lastMarkdown(h.channel)).toContain('没有单独的不 @ 设置');
   });
 
   it('adds every known bot group through /invite all group', async () => {
@@ -310,6 +477,22 @@ describe('Bridge command contracts', () => {
 
     const root = await loadRootConfig(h.controls.configPath);
     expect(root?.profiles.claude?.access.allowedChats).toEqual(['oc-group-1', 'oc-group-2']);
+  });
+
+  it('rejects no-at modifiers on /invite all group without partial updates', async () => {
+    const h = await createHarness();
+    h.controls.knownChats = [
+      { id: 'oc-group-1', name: 'Group One' },
+      { id: 'oc-group-2', name: 'Group Two' },
+    ];
+
+    await expect(h.run('/invite all group no-at')).resolves.toBe(true);
+
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toEqual([]);
+    expect(root?.profiles.claude?.access.chatPolicies).toEqual({});
+    expect(lastMarkdown(h.channel)).toContain('不支持');
+    expect(lastMarkdown(h.channel)).toContain('/invite group no-at');
   });
 });
 

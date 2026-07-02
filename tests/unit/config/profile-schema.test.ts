@@ -96,6 +96,47 @@ describe('profile schema', () => {
       allowedChats: [],
       admins: [],
       requireMentionInGroup: true,
+      chatPolicies: {},
+    });
+  });
+
+  it('defaults per-chat access policies to an empty object', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      access: {
+        allowedUsers: [],
+        allowedChats: [],
+        admins: [],
+      },
+    });
+
+    expect(cfg.access.chatPolicies).toEqual({});
+  });
+
+  it('preserves valid per-chat mention policies and drops invalid entries', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      access: {
+        allowedUsers: [],
+        allowedChats: ['oc_group'],
+        admins: [],
+        chatPolicies: {
+          oc_group: { requireMention: false },
+          oc_strict: { requireMention: true },
+          oc_invalid: { requireMention: 'no' },
+          empty: {},
+          array: [],
+        },
+      },
+    });
+
+    expect(cfg.access.chatPolicies).toEqual({
+      oc_group: { requireMention: false },
+      oc_strict: { requireMention: true },
     });
   });
 

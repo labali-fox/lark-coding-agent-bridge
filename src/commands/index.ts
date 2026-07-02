@@ -1487,10 +1487,50 @@ async function recallMessage(ctx: CommandContext, messageId: string): Promise<vo
 
 // ────────────── /invite and /remove — access lists ──────────────
 
+const GROUP_KIND_TOKENS = new Set(['user', 'admin', 'group', 'all']);
+
+function normalizeGroupCommandToken(token: string): string {
+  return token
+    .normalize('NFKC')
+    .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-')
+    .toLowerCase();
+}
+
+function groupModifierTokens(tokens: string[]): string[] {
+  return tokens
+    .map(normalizeGroupCommandToken)
+    .filter((token) => !GROUP_KIND_TOKENS.has(token));
+}
+
+function wantsNoAt(tokens: string[]): boolean {
+  const modifier = groupModifierTokens(tokens).join('');
+  return modifier === 'no-at' || modifier === 'no@' || modifier === 'noat' || modifier === '免@';
+}
+
+function hasGroupModifier(tokens: string[]): boolean {
+  return groupModifierTokens(tokens).length > 0;
+}
+
+function withoutChatPolicy(
+  policies: ProfileAccess['chatPolicies'],
+  chatId: string,
+): ProfileAccess['chatPolicies'] {
+  const next = { ...policies };
+  delete next[chatId];
+  return next;
+}
+
 async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
   const tokens = args.trim().split(/\s+/).filter(Boolean).map((token) => token.toLowerCase());
 
   if (tokens.includes('all') && tokens.includes('group')) {
+    if (hasGroupModifier(tokens)) {
+      await reply(
+        ctx,
+        '❌ `/invite all group` 不支持额外参数。要开启当前群不 @ 也响应，请在目标群里发 `/invite group no-at`。',
+      );
+      return;
+    }
     const list = new Set(ctx.controls.profileConfig.access.allowedChats);
     let knownChats = ctx.controls.knownChats ?? [];
     if (knownChats.length === 0) {
@@ -1541,6 +1581,16 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
   }
 
   if (kind === 'group') {
+    const noAt = wantsNoAt(tokens);
+    if (hasGroupModifier(tokens) && !noAt) {
+      await reply(
+        ctx,
+        '用法：\n' +
+          '• `/invite group` — 把当前群加入响应群名单\n' +
+          '• `/invite group no-at` — 把当前群加入响应群名单，并允许不 @ 直接发消息',
+      );
+      return;
+    }
     if (ctx.chatMode === 'p2p') {
       await reply(ctx, '❌ `/invite group` 只能在群里发，在私聊里没有 chat_id 可以加。');
       return;
@@ -1554,8 +1604,23 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
       return {
         ...current,
         allowedChats: [...list],
+        ...(noAt
+          ? {
+              chatPolicies: {
+                ...current.chatPolicies,
+                [chatId]: { requireMention: false },
+              },
+            }
+          : {}),
       };
     });
+    if (noAt) {
+      void promptGroupMsgScopeIfMissing(ctx).catch((err) =>
+        log.warn('command', 'group-msg-scope-check-failed', { err: String(err) }),
+      );
+      await reply(ctx, `✅ 当前群（\`${chatId}\`）已加入响应群名单，并可不 @ 直接发消息。`);
+      return;
+    }
     if (already) {
       await reply(ctx, '✅ 当前群已在白名单里，无需重复添加。');
       return;
@@ -1619,11 +1684,38 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
   }
 
   if (kind === 'group') {
+    const noAt = wantsNoAt(tokens);
+    if (hasGroupModifier(tokens) && !noAt) {
+      await reply(
+        ctx,
+        '用法：\n' +
+          '• `/remove group` — 把当前群移出响应群名单\n' +
+          '• `/remove group no-at` — 只关闭当前群的不 @ 直接发消息设置，保留响应群名单',
+      );
+      return;
+    }
     if (ctx.chatMode === 'p2p') {
       await reply(ctx, '`/remove group` 请在要移除的群里发，私聊里没有可移除的群。');
       return;
     }
     const chatId = ctx.msg.chatId;
+    if (noAt) {
+      let hadNoAtPolicy = false;
+      await saveAccessConfig(ctx, (current) => {
+        hadNoAtPolicy = current.chatPolicies[chatId]?.requireMention === false;
+        if (!hadNoAtPolicy) return current;
+        return {
+          ...current,
+          chatPolicies: withoutChatPolicy(current.chatPolicies, chatId),
+        };
+      });
+      if (hadNoAtPolicy) {
+        await reply(ctx, '✅ 已关闭当前群的不 @ 直接发消息设置；当前群仍保留在响应群名单里。');
+        return;
+      }
+      await reply(ctx, '当前群没有单独的不 @ 设置，无需移除；响应群名单保持不变。');
+      return;
+    }
     let missing = false;
     await saveAccessConfig(ctx, (current) => {
       const list = new Set(current.allowedChats);
@@ -1632,6 +1724,7 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
       return {
         ...current,
         allowedChats: [...list],
+        chatPolicies: withoutChatPolicy(current.chatPolicies, chatId),
       };
     });
     if (missing) {
@@ -1703,6 +1796,7 @@ async function saveAccessConfig(
             allowedUsers: access.allowedUsers,
             allowedChats: access.allowedChats,
             admins: access.admins,
+            chatPolicies: access.chatPolicies,
           },
           requireMentionInGroup: access.requireMentionInGroup,
         };
@@ -1773,6 +1867,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
+    chatPolicies: access.chatPolicies,
     larkCliIdentity: ctx.controls.profileConfig.larkCli.identityPreset,
     allowedUsers: access.allowedUsers,
     allowedChats: access.allowedChats,
@@ -1970,6 +2065,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         maxConcurrentRuns,
         runIdleTimeoutMinutes,
         requireMentionInGroup,
+        chatPolicies: access.chatPolicies,
         larkCliIdentity,
         allowedUsers: access.allowedUsers,
         allowedChats: access.allowedChats,

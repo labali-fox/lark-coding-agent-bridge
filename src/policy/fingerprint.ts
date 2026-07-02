@@ -49,6 +49,11 @@ export function accessPolicyDigest(access: ProfileConfig['access']): string {
     admins: [...access.admins].sort(),
     allowedChats: [...access.allowedChats].sort(),
     allowedUsers: [...access.allowedUsers].sort(),
+    chatPolicies: Object.fromEntries(
+      Object.entries(access.chatPolicies)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([chatId, policy]) => [chatId, { requireMention: policy.requireMention ?? null }]),
+    ),
     requireMentionInGroup: access.requireMentionInGroup,
   });
 }

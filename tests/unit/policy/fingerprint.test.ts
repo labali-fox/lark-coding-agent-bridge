@@ -130,6 +130,33 @@ describe('policy fingerprint', () => {
       }),
     );
   });
+
+  it('includes per-chat access policies in the access digest', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'claude',
+      accounts: {
+        app: {
+          id: 'cli_test',
+          secret: '${APP_SECRET}',
+          tenant: 'feishu',
+        },
+      },
+      access: {
+        allowedChats: ['oc_group'],
+      },
+    });
+
+    const open = accessPolicyDigest({
+      ...profile.access,
+      chatPolicies: { oc_group: { requireMention: false } },
+    });
+    const strict = accessPolicyDigest({
+      ...profile.access,
+      chatPolicies: { oc_group: { requireMention: true } },
+    });
+
+    expect(open).not.toBe(strict);
+  });
 });
 
 function baseInput(): FingerprintInputV2 {

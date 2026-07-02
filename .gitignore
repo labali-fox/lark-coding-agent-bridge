@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+.worktrees/
 .corepack/
 *.log
 *.tsbuildinfo
@@ -18,3 +19,4 @@ coverage/
 scripts/
 CHANGELOG.md
 tests-smoke/
+docs/superpowers/

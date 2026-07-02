@@ -17,11 +17,16 @@ export type AgentKind = 'claude' | 'codex';
 export type SandboxMode = CodexSandboxMode;
 export type { AccessMode, PermissionConfig, PermissionSource };
 
+export interface ChatPolicyConfig {
+  requireMention?: boolean;
+}
+
 export interface ProfileAccess {
   allowedUsers: string[];
   allowedChats: string[];
   admins: string[];
   requireMentionInGroup: boolean;
+  chatPolicies: Record<string, ChatPolicyConfig>;
 }
 
 export interface SandboxConfig {
@@ -254,7 +259,23 @@ function normalizeAccess(
     allowedChats: stringArray(access?.allowedChats),
     admins: stringArray(access?.admins),
     requireMentionInGroup: access?.requireMentionInGroup ?? legacyRequireMentionInGroup ?? true,
+    chatPolicies: normalizeChatPolicies(
+      (access as (Partial<ProfileAccess> & { chatPolicies?: unknown }) | undefined)?.chatPolicies,
+    ),
   };
+}
+
+function normalizeChatPolicies(input: unknown): Record<string, ChatPolicyConfig> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const out: Record<string, ChatPolicyConfig> = {};
+  for (const [chatId, rawPolicy] of Object.entries(input as Record<string, unknown>)) {
+    if (!chatId || !rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) continue;
+    const requireMention = (rawPolicy as { requireMention?: unknown }).requireMention;
+    if (typeof requireMention === 'boolean') {
+      out[chatId] = { requireMention };
+    }
+  }
+  return out;
 }
 
 function normalizeWorkspaces(input: {

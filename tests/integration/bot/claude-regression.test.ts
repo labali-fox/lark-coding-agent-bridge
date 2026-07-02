@@ -1,7 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getMessageReplyMode, getRequireMentionInGroup } from '../../../src/config/schema.js';
+import {
+  getMessageReplyMode,
+  getRequireMentionInGroup,
+  shouldRequireMentionInChat,
+} from '../../../src/config/schema.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
 import type { NormalizedMessage } from '@larksuite/channel';
 
@@ -16,6 +20,54 @@ describe('Claude IM regression boundaries', () => {
     };
 
     expect(getRequireMentionInGroup(cfg)).toBe(true);
+  });
+
+  it('resolves per-chat mention policy before global group default', () => {
+    const cfg = {
+      accounts: { app: { id: 'app-id', secret: 'secret', tenant: 'feishu' as const } },
+      access: {
+        allowedUsers: [],
+        allowedChats: ['oc_open', 'oc_strict'],
+        admins: [],
+        requireMentionInGroup: true,
+        chatPolicies: {
+          oc_open: { requireMention: false },
+          oc_strict: { requireMention: true },
+        },
+      },
+    };
+
+    expect(shouldRequireMentionInChat(cfg, 'oc_open')).toBe(false);
+    expect(shouldRequireMentionInChat(cfg, 'oc_strict')).toBe(true);
+    expect(shouldRequireMentionInChat(cfg, 'oc_default')).toBe(true);
+  });
+
+  it('falls back to legacy preferences when profile access is absent', () => {
+    const cfg = {
+      accounts: { app: { id: 'app-id', secret: 'secret', tenant: 'feishu' as const } },
+      preferences: { requireMentionInGroup: false },
+    };
+
+    expect(shouldRequireMentionInChat(cfg, 'oc_any')).toBe(false);
+  });
+
+  it('honors legacy preferences access per-chat mention policies', () => {
+    const cfg = {
+      accounts: { app: { id: 'app-id', secret: 'secret', tenant: 'feishu' as const } },
+      preferences: {
+        requireMentionInGroup: true,
+        access: {
+          chatPolicies: {
+            oc_open: { requireMention: false },
+            oc_strict: { requireMention: true },
+          },
+        },
+      },
+    };
+
+    expect(shouldRequireMentionInChat(cfg, 'oc_open')).toBe(false);
+    expect(shouldRequireMentionInChat(cfg, 'oc_strict')).toBe(true);
+    expect(shouldRequireMentionInChat(cfg, 'oc_default')).toBe(true);
   });
 
   it('keeps markdown as the default reply mode and card as the explicit stop-button mode', () => {
@@ -57,7 +109,7 @@ describe('Claude IM regression boundaries', () => {
     const source = await readFile(join(process.cwd(), 'src/bot/channel.ts'), 'utf8');
 
     expect(source).toContain('respondToMentionAll: false');
-    expect(source).toContain('getRequireMentionInGroup(controls.cfg)');
+    expect(source).toContain('shouldRequireMentionInChat(controls.cfg, msg.chatId)');
     expect(source).toContain('!msg.mentionedBot');
     expect(source).toContain('msg.chatType !== \'p2p\'');
   });

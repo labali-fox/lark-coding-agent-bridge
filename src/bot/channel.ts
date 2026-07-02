@@ -35,9 +35,9 @@ import {
   getCotMessages,
   getMaxConcurrentRuns,
   getMessageReplyMode,
-  getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getShowToolCalls,
+  shouldRequireMentionInChat,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
@@ -647,7 +647,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // event reaching here is either targeted or undirected chatter.
   if (
     msg.chatType !== 'p2p' &&
-    getRequireMentionInGroup(controls.cfg) &&
+    shouldRequireMentionInChat(controls.cfg, msg.chatId) &&
     !msg.mentionedBot
   ) {
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
