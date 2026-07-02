@@ -14,6 +14,7 @@ const base: ConfigFormOpts = {
   larkCliIdentity: 'bot-only',
   allowedUsers: [],
   allowedChats: [],
+  chatPolicies: {},
   admins: [],
   knownChats: [],
 };

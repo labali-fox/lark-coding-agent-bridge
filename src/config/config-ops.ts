@@ -87,9 +87,7 @@ export async function saveAccessConfig(
             allowedUsers: access.allowedUsers,
             allowedChats: access.allowedChats,
             admins: access.admins,
-            ...(access.chatRequireMention && Object.keys(access.chatRequireMention).length > 0
-              ? { chatRequireMention: access.chatRequireMention }
-              : {}),
+            chatPolicies: access.chatPolicies,
           },
           requireMentionInGroup: access.requireMentionInGroup,
         };

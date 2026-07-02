@@ -1,5 +1,5 @@
 import type { ProfileConfig } from '../config/profile-schema';
-import { getRequireMentionInGroup, type AppConfig } from '../config/schema';
+import { shouldRequireMentionInChat, type AppConfig } from '../config/schema';
 export { accessPolicyDigest } from './fingerprint';
 
 export type OwnerRefreshState = 'ok' | 'failed' | 'unknown';
@@ -58,17 +58,20 @@ export function canUseGroup(
 }
 
 /**
- * Whether a group message must @-mention the bot to be handled. A per-chat
- * override (profile.access.chatRequireMention[chatId]) takes priority over the
- * global requireMentionInGroup (from cfg). p2p chats never call this.
+ * Whether a group message must @-mention the bot to be handled. Per-chat
+ * policies take priority over the global requireMentionInGroup setting. p2p
+ * chats never call this.
  */
 export function requireMentionForChat(
   profile: ProfileConfig,
   cfg: AppConfig,
   chatId: string,
 ): boolean {
-  const override = profile.access.chatRequireMention?.[chatId];
-  return typeof override === 'boolean' ? override : getRequireMentionInGroup(cfg);
+  const policy = profile.access.chatPolicies[chatId];
+  if (typeof policy?.requireMention === 'boolean') {
+    return policy.requireMention;
+  }
+  return shouldRequireMentionInChat(cfg, chatId);
 }
 
 export function canRunAdminCommand(

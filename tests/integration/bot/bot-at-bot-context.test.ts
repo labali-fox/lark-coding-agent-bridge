@@ -2,6 +2,7 @@ import type { NormalizedMessage } from '@larksuite/channel';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createRootConfig, saveRootConfig } from '../../../src/config/profile-store.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
@@ -31,6 +32,7 @@ interface MessageHandlerMap {
 }
 
 interface FakeLarkChannel {
+  sent: Array<{ chatId: string; content: unknown; options?: unknown }>;
   botIdentity: { openId: string; name: string };
   rawClient: {
     request: ReturnType<typeof vi.fn>;
@@ -81,6 +83,78 @@ describe('bot identity injection into the agent adapter', () => {
 });
 
 describe('sender identity in bridge_context', () => {
+  it('uses /invite group no-at to let later unmentioned group messages run, then /remove group no-at disables it', async () => {
+    const h = await createHarness();
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_invite_no_at',
+        content: '/invite group no-at',
+      }),
+    );
+    expect(lastMarkdown(h.channel)).toContain('不 @');
+    expect(lastMarkdown(h.channel)).not.toContain('无需重复添加');
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_unmentioned_after_command',
+        content: '不用 @ 的普通群消息',
+        mentionedBot: false,
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_remove_no_at',
+        content: '/remove group no-at',
+      }),
+    );
+    expect(lastMarkdown(h.channel)).toContain('已关闭当前群的不 @');
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_unmentioned_after_remove',
+        content: '关闭后不 @ 不应触发',
+        mentionedBot: false,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(h.agent.runOptions).toHaveLength(1);
+  });
+
+  it('accepts unmentioned group messages only when the per-chat no-at policy allows them', async () => {
+    const strict = await createHarness();
+    await startTestBridge(strict);
+
+    await strict.channel.handlers.message?.(
+      message({
+        messageId: 'om_unmentioned_strict',
+        content: '不用 @ 的普通群消息',
+        mentionedBot: false,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(strict.agent.runOptions).toHaveLength(0);
+
+    const open = await createHarness({
+      chatPolicies: {
+        oc_chat: { requireMention: false },
+      },
+    });
+    await startTestBridge(open);
+
+    await open.channel.handlers.message?.(
+      message({
+        messageId: 'om_unmentioned_open',
+        content: '不用 @ 的普通群消息',
+        mentionedBot: false,
+      }),
+    );
+    await waitFor(() => open.agent.runOptions.length === 1);
+  });
+
   it('marks a bot sender via raw sender_type and injects botOpenId and mentions', async () => {
     const h = await createHarness();
     await startTestBridge(h);
@@ -226,7 +300,9 @@ describe('sender identity in bridge_context', () => {
   });
 });
 
-async function createHarness(): Promise<{
+async function createHarness(access?: {
+  chatPolicies?: Record<string, { requireMention?: boolean }>;
+}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
   agent: FakeAgentAdapter;
@@ -249,6 +325,8 @@ async function createHarness(): Promise<{
     access: {
       allowedChats: ['oc_chat'],
       allowedUsers: ['ou_user'],
+      admins: ['ou_user'],
+      ...(access?.chatPolicies ? { chatPolicies: access.chatPolicies } : {}),
     },
   });
   const profileConfig = {
@@ -265,7 +343,9 @@ async function createHarness(): Promise<{
   });
   const channel = createFakeLarkChannel();
   sdkMock.channel = channel;
-  const controls = createControls(profileConfig);
+  const configPath = join(tmp.root, 'config.json');
+  await saveRootConfig(createRootConfig('test', profileConfig), configPath);
+  const controls = createControls(profileConfig, configPath);
   cleanups.push(async () => {
     await Promise.all([sessions.flush(), workspaces.flush()]);
     await tmp.cleanup();
@@ -289,7 +369,7 @@ async function startTestBridge(h: {
   controls: ReturnType<typeof createControls>;
 }): Promise<void> {
   const bridge = await startChannel({
-    cfg: h.profileConfig,
+    cfg: h.controls.profileConfig,
     agent: h.agent,
     sessions: h.sessions,
     workspaces: h.workspaces,
@@ -300,8 +380,10 @@ async function startTestBridge(h: {
 
 function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
+  const sent: FakeLarkChannel['sent'] = [];
   return {
     handlers,
+    sent,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -337,7 +419,9 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
     getConnectionStatus() {
       return { state: 'connected', reconnectAttempts: 0 };
     },
-    async send() {},
+    async send(chatId, content, options) {
+      sent.push({ chatId, content, options });
+    },
     async stream(_chatId, input) {
       if (isMarkdownStreamInput(input)) {
         await input.markdown({ setContent: async () => {} });
@@ -346,7 +430,7 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
   };
 }
 
-function createControls(profileConfig: ReturnType<typeof createDefaultProfileConfig>) {
+function createControls(profileConfig: ReturnType<typeof createDefaultProfileConfig>, configPath: string) {
   return {
     profile: 'test',
     profileConfig,
@@ -354,10 +438,18 @@ function createControls(profileConfig: ReturnType<typeof createDefaultProfileCon
     async refreshOwner() {},
     async restart() {},
     async exit() {},
-    configPath: '/tmp/config.json',
+    configPath,
     cfg: profileConfig,
     processId: 'proc_test',
   };
+}
+
+function lastMarkdown(channel: FakeLarkChannel): string {
+  const content = channel.sent.at(-1)?.content;
+  expect(content).toBeTypeOf('object');
+  const markdown = (content as { markdown?: unknown }).markdown;
+  expect(markdown).toBeTypeOf('string');
+  return markdown as string;
 }
 
 function message(input: {
@@ -367,7 +459,9 @@ function message(input: {
   senderName?: string;
   rawSenderType?: string;
   mentions?: Array<{ key: string; openId?: string; name?: string; isBot?: boolean }>;
+  mentionedBot?: boolean;
 }): NormalizedMessage {
+  const mentionedBot = input.mentionedBot ?? true;
   return {
     messageId: input.messageId,
     chatId: 'oc_chat',
@@ -377,11 +471,11 @@ function message(input: {
     content: input.content,
     rawContentType: 'text',
     resources: [],
-    mentions: input.mentions ?? [
-      { key: '@_user_1', openId: 'ou_bot', name: 'Bridge', isBot: true },
-    ],
+    mentions:
+      input.mentions ??
+      (mentionedBot ? [{ key: '@_user_1', openId: 'ou_bot', name: 'Bridge', isBot: true }] : []),
     mentionAll: false,
-    mentionedBot: true,
+    mentionedBot,
     createTime: 1760000001000,
     ...(input.rawSenderType
       ? {

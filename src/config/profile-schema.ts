@@ -17,18 +17,16 @@ export type AgentKind = 'claude' | 'codex';
 export type SandboxMode = CodexSandboxMode;
 export type { AccessMode, PermissionConfig, PermissionSource };
 
+export interface ChatPolicyConfig {
+  requireMention?: boolean;
+}
+
 export interface ProfileAccess {
   allowedUsers: string[];
   allowedChats: string[];
   admins: string[];
   requireMentionInGroup: boolean;
-  /**
-   * Per-chat override of {@link requireMentionInGroup}, keyed by chat_id.
-   * `true` = require an @-mention in that chat, `false` = respond to every
-   * message. A chat absent from the map follows the global setting. Takes
-   * priority over `requireMentionInGroup` for the chats it lists.
-   */
-  chatRequireMention?: Record<string, boolean>;
+  chatPolicies: Record<string, ChatPolicyConfig>;
 }
 
 export interface SandboxConfig {
@@ -342,23 +340,36 @@ function normalizeAccess(
   access: Partial<ProfileAccess> | undefined,
   legacyRequireMentionInGroup: boolean | undefined,
 ): ProfileAccess {
-  const chatRequireMention = normalizeChatMentionMap(access?.chatRequireMention);
+  const rawAccess = access as
+    | (Partial<ProfileAccess> & { chatRequireMention?: unknown; chatPolicies?: unknown })
+    | undefined;
   return {
     allowedUsers: stringArray(access?.allowedUsers),
     allowedChats: stringArray(access?.allowedChats),
     admins: stringArray(access?.admins),
     requireMentionInGroup: access?.requireMentionInGroup ?? legacyRequireMentionInGroup ?? true,
-    // Omit when empty so configs without per-chat overrides stay clean.
-    ...(Object.keys(chatRequireMention).length > 0 ? { chatRequireMention } : {}),
+    chatPolicies: normalizeChatPolicies(rawAccess?.chatPolicies, rawAccess?.chatRequireMention),
   };
 }
 
-/** Keep only string→boolean entries; drop anything malformed. */
-function normalizeChatMentionMap(input: unknown): Record<string, boolean> {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
-  const out: Record<string, boolean> = {};
-  for (const [chatId, value] of Object.entries(input as Record<string, unknown>)) {
-    if (chatId && typeof value === 'boolean') out[chatId] = value;
+function normalizeChatPolicies(
+  input: unknown,
+  legacyMentionMap?: unknown,
+): Record<string, ChatPolicyConfig> {
+  const out: Record<string, ChatPolicyConfig> = {};
+  if (legacyMentionMap && typeof legacyMentionMap === 'object' && !Array.isArray(legacyMentionMap)) {
+    for (const [chatId, value] of Object.entries(legacyMentionMap as Record<string, unknown>)) {
+      if (chatId && typeof value === 'boolean') out[chatId] = { requireMention: value };
+    }
+  }
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    for (const [chatId, rawPolicy] of Object.entries(input as Record<string, unknown>)) {
+      if (!chatId || !rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) continue;
+      const requireMention = (rawPolicy as { requireMention?: unknown }).requireMention;
+      if (typeof requireMention === 'boolean') {
+        out[chatId] = { requireMention };
+      }
+    }
   }
   return out;
 }

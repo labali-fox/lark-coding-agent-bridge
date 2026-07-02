@@ -204,7 +204,7 @@ export function ConfigView({ profile }: { profile: string }) {
           <AllowedChats
             profile={profile}
             ids={cfg.access.allowedChats}
-            chatRequireMention={cfg.access.chatRequireMention}
+            chatPolicies={cfg.access.chatPolicies}
             chatNames={chatNames}
             globalRequire={cfg.requireMentionInGroup}
             onAdd={(id, name) => {
@@ -561,7 +561,7 @@ function SelectRow({ value, onChange, options }: {
 function AllowedChats({
   profile,
   ids,
-  chatRequireMention,
+  chatPolicies,
   chatNames,
   globalRequire,
   onAdd,
@@ -570,7 +570,7 @@ function AllowedChats({
 }: {
   profile: string;
   ids: string[];
-  chatRequireMention: Record<string, boolean>;
+  chatPolicies: Record<string, { requireMention?: boolean }>;
   chatNames: Record<string, string>;
   globalRequire: boolean;
   onAdd: (id: string, name?: string) => void;
@@ -586,7 +586,7 @@ function AllowedChats({
       <div className="divide-y rounded-md border">
         {ids.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">（暂无）</p>}
         {ids.map((id) => {
-          const override = chatRequireMention[id];
+          const override = chatPolicies[id]?.requireMention;
           const value = override === undefined ? "global" : override ? "on" : "off";
           return (
             <div key={id} className="flex items-center gap-2 px-3 py-2">

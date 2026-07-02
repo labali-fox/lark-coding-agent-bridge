@@ -37,6 +37,7 @@ import {
   getMessageReplyMode,
   getRunIdleTimeoutMs,
   getShowToolCalls,
+  shouldRequireMentionInChat,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
@@ -45,7 +46,7 @@ import {
   toPolicyAttachment,
   toPromptAttachment,
 } from '../media/attachment';
-import { canUseDm, canUseGroup, requireMentionForChat } from '../policy/access';
+import { canUseDm, canUseGroup } from '../policy/access';
 import { MeetingManager } from '../meeting/manager';
 import type { VcRequestClient } from '../meeting/api';
 import { attachMeetingAgent, summarizeEndedMeeting } from '../meeting/orchestrator';
@@ -731,7 +732,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // targeted or undirected chatter.
   if (
     msg.chatType !== 'p2p' &&
-    requireMentionForChat(controls.profileConfig, controls.cfg, msg.chatId) &&
+    shouldRequireMentionInChat(controls.cfg, msg.chatId) &&
     !msg.mentionedBot
   ) {
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });

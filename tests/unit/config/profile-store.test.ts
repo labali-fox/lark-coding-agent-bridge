@@ -193,7 +193,10 @@ describe('profile store canonical serialization', () => {
     const root = await tmpRoot();
     const configPath = join(root, 'config.json');
     const profile = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app } });
-    profile.access.chatRequireMention = { oc_open: false, oc_strict: true };
+    profile.access.chatPolicies = {
+      oc_open: { requireMention: false },
+      oc_strict: { requireMention: true },
+    };
 
     await saveRootConfig({
       schemaVersion: 2,
@@ -203,15 +206,15 @@ describe('profile store canonical serialization', () => {
     }, configPath);
 
     const saved = JSON.parse(await readFile(configPath, 'utf8'));
-    expect(saved.profiles.claude.access.chatRequireMention).toEqual({
-      oc_open: false,
-      oc_strict: true,
+    expect(saved.profiles.claude.access.chatPolicies).toEqual({
+      oc_open: { requireMention: false },
+      oc_strict: { requireMention: true },
     });
 
     const loaded = await loadRootConfig(configPath);
-    expect(loaded?.profiles.claude?.access.chatRequireMention).toEqual({
-      oc_open: false,
-      oc_strict: true,
+    expect(loaded?.profiles.claude?.access.chatPolicies).toEqual({
+      oc_open: { requireMention: false },
+      oc_strict: { requireMention: true },
     });
   });
 

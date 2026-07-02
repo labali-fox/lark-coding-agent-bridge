@@ -172,14 +172,14 @@ describe('ui server (supervisor-backed)', () => {
     const set = await json(
       await post('/api/access', handle.token, { action: 'set-mention', kind: 'chat', id: 'oc_grp', requireMention: false }),
     );
-    expect(set.chatRequireMention).toEqual({ oc_grp: false });
-    expect(online.get('claude').profileConfig.access.chatRequireMention).toEqual({ oc_grp: false });
+    expect(set.chatPolicies).toEqual({ oc_grp: { requireMention: false } });
+    expect(online.get('claude').profileConfig.access.chatPolicies).toEqual({ oc_grp: { requireMention: false } });
 
     // Clear it (follow global) with null.
     const cleared = await json(
       await post('/api/access', handle.token, { action: 'set-mention', kind: 'chat', id: 'oc_grp', requireMention: null }),
     );
-    expect(cleared.chatRequireMention).toEqual({});
+    expect(cleared.chatPolicies).toEqual({});
 
     // Re-set then remove the chat → override is dropped too.
     await json(await post('/api/access', handle.token, { action: 'set-mention', kind: 'chat', id: 'oc_grp', requireMention: true }));
@@ -187,7 +187,7 @@ describe('ui server (supervisor-backed)', () => {
       await post('/api/access', handle.token, { action: 'remove', kind: 'chat', id: 'oc_grp' }),
     );
     expect(afterRemove.allowedChats).not.toContain('oc_grp');
-    expect(afterRemove.chatRequireMention).toEqual({});
+    expect(afterRemove.chatPolicies).toEqual({});
   });
 
   it('lists profiles with online flag from the supervisor', async () => {

@@ -53,8 +53,8 @@ export interface ConfigView {
     allowedUsers: string[];
     allowedChats: string[];
     admins: string[];
-    /** chat_id → per-chat @-mention override (overrides requireMentionInGroup). */
-    chatRequireMention: Record<string, boolean>;
+    /** chat_id → per-chat policy overrides. */
+    chatPolicies: Record<string, { requireMention?: boolean }>;
   };
   /** True when this profile's process hosts the UI (edits apply live). */
   live?: boolean;

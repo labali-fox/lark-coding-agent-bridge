@@ -68,9 +68,8 @@ export interface ConfigView {
     allowedUsers: string[];
     allowedChats: string[];
     admins: string[];
-    /** Per-chat @-mention override (chat_id → bool); overrides the global
-     * requireMentionInGroup. Absent chats follow the global setting. */
-    chatRequireMention: Record<string, boolean>;
+    /** Per-chat policies. Absent chats follow the global mention setting. */
+    chatPolicies: ProfileAccess['chatPolicies'];
   };
   /** True when edits to this profile apply live (its process hosts the UI). */
   live: boolean;
@@ -97,7 +96,7 @@ export function buildConfigView(state: MutableProfileState, live = false): Confi
       allowedUsers: state.profileConfig.access.allowedUsers,
       allowedChats: state.profileConfig.access.allowedChats,
       admins: state.profileConfig.access.admins,
-      chatRequireMention: state.profileConfig.access.chatRequireMention ?? {},
+      chatPolicies: state.profileConfig.access.chatPolicies,
     },
     live,
   };
@@ -349,7 +348,7 @@ const ACCESS_LIST: Record<AccessKind, 'allowedUsers' | 'admins' | 'allowedChats'
 /**
  * Mutate the profile's access. Two operations:
  *  - `add`/`remove` a single id from a list (user/admin/chat) — mirrors
- *    `/invite` `/remove`. Removing a chat also drops its @-mention override.
+ *    `/invite` `/remove`. Removing a chat also drops its per-chat policy.
  *  - `set-mention`: set (or clear) a chat's per-chat @-mention override. Pass
  *    `requireMention: true|false` to override, or `null` to follow the global.
  */
@@ -373,10 +372,13 @@ export async function mutateAccess(
     }
     const requireMention = typeof fv.requireMention === 'boolean' ? fv.requireMention : null;
     const access = await saveAccessConfig(state, (current) => {
-      const map = { ...(current.chatRequireMention ?? {}) };
-      if (requireMention === null) delete map[id];
-      else map[id] = requireMention;
-      return { ...current, chatRequireMention: map };
+      const chatPolicies = { ...current.chatPolicies };
+      if (requireMention === null) {
+        delete chatPolicies[id];
+      } else {
+        chatPolicies[id] = { ...(chatPolicies[id] ?? {}), requireMention };
+      }
+      return { ...current, chatPolicies };
     });
     return accessView(access);
   }
@@ -395,11 +397,11 @@ export async function mutateAccess(
     if (action === 'add') set.add(id);
     else set.delete(id);
     const next = { ...current, [listKey]: [...set] };
-    // Dropping a chat also drops its @-mention override so it can't linger.
-    if (action === 'remove' && kind === 'chat' && next.chatRequireMention?.[id] !== undefined) {
-      const map = { ...next.chatRequireMention };
-      delete map[id];
-      next.chatRequireMention = map;
+    // Dropping a chat also drops its per-chat policy so it can't linger.
+    if (action === 'remove' && kind === 'chat' && next.chatPolicies[id] !== undefined) {
+      const chatPolicies = { ...next.chatPolicies };
+      delete chatPolicies[id];
+      next.chatPolicies = chatPolicies;
     }
     return next;
   });
@@ -411,7 +413,7 @@ function accessView(access: ProfileAccess): ConfigView['access'] {
     allowedUsers: access.allowedUsers,
     allowedChats: access.allowedChats,
     admins: access.admins,
-    chatRequireMention: access.chatRequireMention ?? {},
+    chatPolicies: access.chatPolicies,
   };
 }
 

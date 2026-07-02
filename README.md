@@ -149,8 +149,9 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/invite user @name` | Allow a user to use the bot in DMs |
 | `/invite admin @name` | Add an access-control admin |
 | `/invite group` | Allow the current group to use the bot |
+| `/invite group no-at` | Allow the current group and let it respond without `@bot` |
 | `/invite all group` | Allow all groups the bot has joined |
-| `/remove user @name`, `/remove admin @name`, `/remove group` | Remove access entries |
+| `/remove user @name`, `/remove admin @name`, `/remove group`, `/remove group no-at` | Remove access entries or the current group's no-@ override |
 | `/stop` | Stop the current run, including the card stop button |
 | `/timeout [N\|off\|default]` | Set or clear the current session idle watchdog |
 | `/ps` | List local bridge processes |
@@ -246,6 +247,7 @@ To let other people or groups in, add them to one of three lists:
 |------|----------|-----|--------|
 | **Allowed users** | who can DM the bot | `/invite user @them` | `/remove user @them` |
 | **Allowed chats** | which groups the bot answers in (for **everyone** in them) | `/invite group` (current group) / `/invite all group` (every group the bot is in) | `/remove group` (current group) |
+| **No-@ chats** | allowed groups where normal messages reach the bot without `@bot` | `/invite group no-at` (current group) | `/remove group no-at` (keeps the group allowed) |
 | **Admins** | who can change settings, and use the bot in any group | `/invite admin @them` | `/remove admin @them` |
 
 > `/invite` and `/remove` can only be run by **you (the creator) and admins**. The `@` in the command points at the *target person* (not the bot) — the bot resolves the mention to their identity, so you never deal with raw IDs.
@@ -260,13 +262,14 @@ To let other people or groups in, add them to one of three lists:
 - **Just me** → nothing to do; this is the default.
 - **Let a teammate DM the bot** → `/invite user @them`
 - **Open a work group to everyone in it** → send `/invite group` inside that group
+- **Open a group and let it respond without `@bot`** → send `/invite group no-at` inside that group
 - **First-time setup, onboard every group the bot is already in** → `/invite all group` pulls them all into the list at once; trim with `/remove group` afterwards
 - **Add a co-admin** → `/invite admin @them`
 
 ### Worth knowing
 
 - Changes take effect on the **next message** — no restart needed.
-- **In groups you must `@` the bot first** (DMs don't need it). That's a separate toggle (`/config` → "require @ in groups"), independent of the lists above.
+- **In groups you must `@` the bot first by default** (DMs don't need it). Use `/invite group no-at` in a specific allowed group to override that group only, or `/config` to change the global default.
 - Strangers get pure silence — no reply at all. The one exception: if someone `@`-mentions the bot in a group that hasn't been opened up, the bot posts a friendly one-liner telling them an admin can run `/invite group` to enable it.
 - Cloud-doc comments are document-scoped: anyone who can comment in a supported document and mention the bot can trigger a reply.
 
@@ -284,14 +287,19 @@ If you'd rather not do it inside Feishu, `/invite` and `/config` write the match
         "allowedUsers": ["ou_xxxxxxxxxxxxx"],
         "allowedChats": ["oc_xxxxxxxxxxxxx"],
         "admins": ["ou_xxxxxxxxxxxxx"],
-        "requireMentionInGroup": true
+        "requireMentionInGroup": true,
+        "chatPolicies": {
+          "oc_xxxxxxxxxxxxx": {
+            "requireMention": false
+          }
+        }
       }
     }
   }
 }
 ```
 
-`allowedUsers` / `admins` take user `open_id`s; `allowedChats` takes group `chat_id`s. The easiest way to find an ID by hand: have the person message the bot (or `@` it in the group), then check the active profile's log:
+`allowedUsers` / `admins` take user `open_id`s; `allowedChats` and `chatPolicies` take group `chat_id`s. Prefer `/invite group no-at` over manual `chatPolicies` edits so the bridge uses the current group's real ID automatically. The easiest way to find an ID by hand: have the person message the bot (or `@` it in the group), then check the active profile's log:
 
 ```bash
 grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y%m%d).jsonl | tail -5

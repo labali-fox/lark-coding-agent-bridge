@@ -36,6 +36,8 @@
     "dev": "tsup --watch",
     "build:web": "vite build web",
     "build": "pnpm build:web && tsup",
+    "bridge:run-current": "bash bin/install-current-and-run.sh run",
+    "bridge:restart-current": "bash bin/install-current-and-run.sh restart",
     "typecheck": "tsc --noEmit",
     "pretest": "pnpm build:web",
     "test": "vitest run",

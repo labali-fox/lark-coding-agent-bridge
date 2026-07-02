@@ -151,7 +151,12 @@ describe('requireMentionForChat', () => {
   });
 
   it('lets a per-chat override win over the global setting, both directions', () => {
-    const profile = profileWithAccess({ chatRequireMention: { oc_open: false, oc_strict: true } });
+    const profile = profileWithAccess({
+      chatPolicies: {
+        oc_open: { requireMention: false },
+        oc_strict: { requireMention: true },
+      },
+    });
     // Global requires @, but oc_open overrides to respond-to-all.
     expect(requireMentionForChat(profile, globalOn, 'oc_open')).toBe(false);
     // Global responds to all, but oc_strict overrides to require @.

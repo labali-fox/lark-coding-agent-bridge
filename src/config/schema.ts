@@ -69,6 +69,10 @@ export interface SecretsConfig {
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
 export type CotMessagesMode = 'off' | 'brief' | 'detailed';
 
+export interface ChatPolicyConfig {
+  requireMention?: boolean;
+}
+
 /**
  * Access control settings. Empty lists are fail-closed in the v2 policy:
  * no DM senders, no group chats, and only the runtime owner can administer
@@ -84,9 +88,10 @@ export interface AppAccess {
    * (/account, /config, /exit, /reconnect, /doctor, /cd, /ws, /doc,
    * /invite, /remove). */
   admins?: string[];
-  /** Per-chat @-mention override (chat_id → bool); overrides the global
-   * requireMentionInGroup for the listed chats. */
+  /** Legacy per-chat @-mention override. Prefer chatPolicies. */
   chatRequireMention?: Record<string, boolean>;
+  /** Per-chat mention policy overrides. Key = chat_id. */
+  chatPolicies?: Record<string, ChatPolicyConfig>;
 }
 
 export interface AppPreferences {
@@ -241,16 +246,35 @@ export function getMaxConcurrentRuns(cfg: AppConfig): number {
  * field) inherit the new safer default automatically.
  */
 export function getRequireMentionInGroup(cfg: AppConfig): boolean {
-  if (cfg.preferences?.requireMentionInGroup !== undefined) {
-    return cfg.preferences.requireMentionInGroup !== false;
-  }
   const profileAccess = (cfg as AppConfig & {
     access?: { requireMentionInGroup?: boolean };
   }).access;
   if (profileAccess?.requireMentionInGroup !== undefined) {
     return profileAccess.requireMentionInGroup;
   }
+  if (cfg.preferences?.requireMentionInGroup !== undefined) {
+    return cfg.preferences.requireMentionInGroup !== false;
+  }
   return true;
+}
+
+export function shouldRequireMentionInChat(cfg: AppConfig, chatId: string): boolean {
+  const profileAccess = (cfg as AppConfig & {
+    access?: {
+      requireMentionInGroup?: boolean;
+      chatPolicies?: Record<string, { requireMention?: unknown }>;
+      chatRequireMention?: Record<string, unknown>;
+    };
+  }).access;
+  const legacyAccess = cfg.preferences?.access;
+  const policy = profileAccess?.chatPolicies?.[chatId] ?? legacyAccess?.chatPolicies?.[chatId];
+  if (typeof policy?.requireMention === 'boolean') {
+    return policy.requireMention;
+  }
+  const legacyOverride =
+    profileAccess?.chatRequireMention?.[chatId] ?? legacyAccess?.chatRequireMention?.[chatId];
+  if (typeof legacyOverride === 'boolean') return legacyOverride;
+  return getRequireMentionInGroup(cfg);
 }
 
 /**
