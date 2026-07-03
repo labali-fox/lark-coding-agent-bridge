@@ -68,9 +68,20 @@ export interface SecretsConfig {
  */
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
 export type CotMessagesMode = 'off' | 'brief' | 'detailed';
+export type ChatResponseMode = 'mention-only' | 'ambient' | 'always';
+export type AmbientLevel = 'quiet' | 'balanced' | 'active';
+
+export interface ChatHistoryPolicy {
+  enabled: boolean;
+  retentionDays: number;
+  maxMessages: number;
+}
 
 export interface ChatPolicyConfig {
   requireMention?: boolean;
+  responseMode?: ChatResponseMode;
+  ambientLevel?: AmbientLevel;
+  history?: Partial<ChatHistoryPolicy>;
 }
 
 /**
@@ -257,18 +268,59 @@ export function getRequireMentionInGroup(cfg: AppConfig): boolean {
 }
 
 export function shouldRequireMentionInChat(cfg: AppConfig, chatId: string): boolean {
+  return getChatResponseMode(cfg, chatId).mode === 'mention-only';
+}
+
+export function getChatResponseMode(
+  cfg: AppConfig,
+  chatId: string,
+): { mode: ChatResponseMode; ambientLevel: AmbientLevel } {
+  const policy = getChatPolicy(cfg, chatId);
+  const ambientLevel = isAmbientLevel(policy?.ambientLevel) ? policy.ambientLevel : 'balanced';
+  if (isChatResponseMode(policy?.responseMode)) {
+    return { mode: policy.responseMode, ambientLevel };
+  }
+  if (typeof policy?.requireMention === 'boolean') {
+    return {
+      mode: policy.requireMention ? 'mention-only' : 'always',
+      ambientLevel,
+    };
+  }
+  return {
+    mode: getRequireMentionInGroup(cfg) ? 'mention-only' : 'always',
+    ambientLevel,
+  };
+}
+
+export function getChatHistoryPolicy(cfg: AppConfig, chatId: string): ChatHistoryPolicy {
+  const raw = getChatPolicy(cfg, chatId)?.history;
+  return {
+    enabled: raw?.enabled === true,
+    retentionDays: clampInteger(raw?.retentionDays, 30, 1, 365),
+    maxMessages: clampInteger(raw?.maxMessages, 10_000, 100, 100_000),
+  };
+}
+
+function getChatPolicy(cfg: AppConfig, chatId: string): ChatPolicyConfig | undefined {
   const profileAccess = (cfg as AppConfig & {
     access?: {
-      requireMentionInGroup?: boolean;
-      chatPolicies?: Record<string, { requireMention?: unknown }>;
+      chatPolicies?: Record<string, ChatPolicyConfig>;
     };
   }).access;
-  const legacyAccess = cfg.preferences?.access;
-  const policy = profileAccess?.chatPolicies?.[chatId] ?? legacyAccess?.chatPolicies?.[chatId];
-  if (typeof policy?.requireMention === 'boolean') {
-    return policy.requireMention;
-  }
-  return getRequireMentionInGroup(cfg);
+  return profileAccess?.chatPolicies?.[chatId] ?? cfg.preferences?.access?.chatPolicies?.[chatId];
+}
+
+function isChatResponseMode(value: unknown): value is ChatResponseMode {
+  return value === 'mention-only' || value === 'ambient' || value === 'always';
+}
+
+function isAmbientLevel(value: unknown): value is AmbientLevel {
+  return value === 'quiet' || value === 'balanced' || value === 'active';
+}
+
+function clampInteger(value: unknown, fallback: number, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
 /**

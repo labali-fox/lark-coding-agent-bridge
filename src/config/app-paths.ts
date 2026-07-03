@@ -24,6 +24,7 @@ export interface AppPaths {
   larkCliTargetConfigFile: string;
   mediaDir: string;
   logsDir: string;
+  historyDir: string;
   registryDir: string;
   userRegistryFile: string;
   userLockDir: string;
@@ -58,6 +59,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     larkCliTargetConfigFile: join(profileDir, 'lark-cli', 'lark-channel', 'config.json'),
     mediaDir: join(profileDir, 'media'),
     logsDir: join(profileDir, 'logs'),
+    historyDir: join(profileDir, 'history'),
     registryDir,
     userRegistryFile: join(registryDir, 'processes.json'),
     userLockDir,

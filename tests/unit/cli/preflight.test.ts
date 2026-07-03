@@ -15,6 +15,7 @@ import { loadRootConfig, saveRootConfig } from '../../../src/config/profile-stor
 const mocks = vi.hoisted(() => ({
   spawnProcess: vi.fn(),
   spawnProcessSync: vi.fn(),
+  installBridgeAgentSkills: vi.fn(),
   atomicWriteFailures: [] as Array<{ path: string; err: Error }>,
   calls: [] as Array<{
     cmd: string;
@@ -51,6 +52,10 @@ vi.mock('../../../src/platform/spawn', () => ({
   }),
   spawnProcess: mocks.spawnProcess,
   spawnProcessSync: mocks.spawnProcessSync,
+}));
+
+vi.mock('../../../src/agent/bridge-skill-installer', () => ({
+  installBridgeAgentSkills: mocks.installBridgeAgentSkills,
 }));
 
 const { preFlightChecks } = await import('../../../src/cli/preflight');
@@ -96,6 +101,7 @@ describe('lark-cli preflight', () => {
     mocks.exitCodes = [];
     mocks.outputs = [];
     mocks.onSpawn = undefined;
+    mocks.installBridgeAgentSkills.mockResolvedValue([]);
     mocks.spawnProcessSync.mockReturnValue({ status: 0 });
     mocks.spawnProcess.mockImplementation(
       (cmd: string, args: string[], options: { env?: NodeJS.ProcessEnv } = {}) => {
@@ -156,6 +162,23 @@ describe('lark-cli preflight', () => {
       accounts: { app: { id: string } };
     };
     expect(source.accounts.app.id).toBe('cli_codex');
+  });
+
+  it('installs bridge agent skills before optional CLI checks', async () => {
+    await preFlightChecks({ skipCheckLarkCli: true });
+
+    expect(mocks.installBridgeAgentSkills).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fail startup checks when bridge agent skill installation fails', async () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    mocks.installBridgeAgentSkills.mockRejectedValueOnce(new Error('skill dir is read-only'));
+
+    await expect(preFlightChecks({ skipCheckLarkCli: true })).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledWith('agent-skill', 'install-failed', {
+      err: 'skill dir is read-only',
+    });
   });
 
   it('falls back through a locked root source overlay for lark-cli builds without LARK_CHANNEL_CONFIG support', async () => {

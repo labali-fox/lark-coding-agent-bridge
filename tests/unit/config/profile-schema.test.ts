@@ -7,6 +7,12 @@ import {
   createDefaultProfileConfig,
   normalizeProfileConfig,
 } from '../../../src/config/profile-schema';
+import {
+  getChatHistoryPolicy,
+  getChatResponseMode,
+  shouldRequireMentionInChat,
+  type AppConfig,
+} from '../../../src/config/schema';
 
 const app = {
   id: 'cli_test',
@@ -137,6 +143,167 @@ describe('profile schema', () => {
     expect(cfg.access.chatPolicies).toEqual({
       oc_group: { requireMention: false },
       oc_strict: { requireMention: true },
+    });
+  });
+
+  it('normalizes ambient group response and history policies', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      access: {
+        allowedUsers: [],
+        allowedChats: ['oc_group'],
+        admins: [],
+        chatPolicies: {
+          oc_group: {
+            responseMode: 'ambient',
+            ambientLevel: 'active',
+            history: {
+              enabled: true,
+              retentionDays: 14,
+              maxMessages: 5000,
+            },
+          },
+          oc_always: {
+            responseMode: 'always',
+            ambientLevel: 'quiet',
+            history: {
+              enabled: false,
+            },
+          },
+        },
+      },
+    });
+
+    expect(cfg.access.chatPolicies).toEqual({
+      oc_group: {
+        responseMode: 'ambient',
+        ambientLevel: 'active',
+        history: {
+          enabled: true,
+          retentionDays: 14,
+          maxMessages: 5000,
+        },
+      },
+      oc_always: {
+        responseMode: 'always',
+        ambientLevel: 'quiet',
+        history: {
+          enabled: false,
+        },
+      },
+    });
+  });
+
+  it('drops invalid ambient policy fields while preserving valid fields', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      access: {
+        allowedUsers: [],
+        allowedChats: ['oc_group'],
+        admins: [],
+        chatPolicies: {
+          oc_group: {
+            requireMention: false,
+            responseMode: 'noisy',
+            ambientLevel: 'loud',
+            history: {
+              enabled: 'yes',
+              retentionDays: 0,
+              maxMessages: Number.POSITIVE_INFINITY,
+            },
+          },
+        },
+      },
+    });
+
+    expect(cfg.access.chatPolicies).toEqual({
+      oc_group: { requireMention: false },
+    });
+  });
+
+  it('resolves chat response modes with legacy requireMention compatibility', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      access: {
+        allowedUsers: [],
+        allowedChats: ['oc_group'],
+        admins: [],
+        requireMentionInGroup: true,
+        chatPolicies: {
+          oc_legacy_open: { requireMention: false },
+          oc_legacy_strict: { requireMention: true },
+          oc_ambient: { responseMode: 'ambient', ambientLevel: 'quiet' },
+        },
+      },
+    }) as AppConfig;
+
+    expect(getChatResponseMode(cfg, 'oc_default')).toEqual({
+      mode: 'mention-only',
+      ambientLevel: 'balanced',
+    });
+    expect(getChatResponseMode(cfg, 'oc_legacy_open')).toEqual({
+      mode: 'always',
+      ambientLevel: 'balanced',
+    });
+    expect(getChatResponseMode(cfg, 'oc_legacy_strict')).toEqual({
+      mode: 'mention-only',
+      ambientLevel: 'balanced',
+    });
+    expect(getChatResponseMode(cfg, 'oc_ambient')).toEqual({
+      mode: 'ambient',
+      ambientLevel: 'quiet',
+    });
+    expect(shouldRequireMentionInChat(cfg, 'oc_legacy_open')).toBe(false);
+    expect(shouldRequireMentionInChat(cfg, 'oc_legacy_strict')).toBe(true);
+    expect(shouldRequireMentionInChat(cfg, 'oc_ambient')).toBe(false);
+  });
+
+  it('keeps durable chat history disabled by default and resolves explicit policy', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      access: {
+        allowedUsers: [],
+        allowedChats: ['oc_group'],
+        admins: [],
+        chatPolicies: {
+          oc_history: {
+            history: {
+              enabled: true,
+              retentionDays: 14,
+              maxMessages: 5000,
+            },
+          },
+          oc_partial: {
+            history: {
+              enabled: true,
+            },
+          },
+        },
+      },
+    }) as AppConfig;
+
+    expect(getChatHistoryPolicy(cfg, 'oc_default')).toEqual({
+      enabled: false,
+      retentionDays: 30,
+      maxMessages: 10000,
+    });
+    expect(getChatHistoryPolicy(cfg, 'oc_history')).toEqual({
+      enabled: true,
+      retentionDays: 14,
+      maxMessages: 5000,
+    });
+    expect(getChatHistoryPolicy(cfg, 'oc_partial')).toEqual({
+      enabled: true,
+      retentionDays: 30,
+      maxMessages: 10000,
     });
   });
 

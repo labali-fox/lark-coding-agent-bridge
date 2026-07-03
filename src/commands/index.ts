@@ -1507,6 +1507,34 @@ function wantsNoAt(tokens: string[]): boolean {
   return modifier === 'no-at' || modifier === 'no@' || modifier === 'noat' || modifier === '免@';
 }
 
+type GroupPolicyModifier =
+  | { kind: 'none' }
+  | { kind: 'no-at' }
+  | { kind: 'ambient'; level: 'quiet' | 'balanced' | 'active' }
+  | { kind: 'history-on' }
+  | { kind: 'history-off' };
+
+function parseGroupPolicyModifier(tokens: string[]): GroupPolicyModifier | undefined {
+  const modifiers = groupModifierTokens(tokens);
+  if (modifiers.length === 0) return { kind: 'none' };
+  if (wantsNoAt(tokens)) return { kind: 'no-at' };
+  if (modifiers[0] === 'ambient') {
+    const level = modifiers[1] ?? 'balanced';
+    if (
+      modifiers.length <= 2 &&
+      (level === 'quiet' || level === 'balanced' || level === 'active')
+    ) {
+      return { kind: 'ambient', level };
+    }
+    return undefined;
+  }
+  if (modifiers[0] === 'history' && modifiers.length === 2) {
+    if (modifiers[1] === 'on') return { kind: 'history-on' };
+    if (modifiers[1] === 'off') return { kind: 'history-off' };
+  }
+  return undefined;
+}
+
 function hasGroupModifier(tokens: string[]): boolean {
   return groupModifierTokens(tokens).length > 0;
 }
@@ -1517,6 +1545,50 @@ function withoutChatPolicy(
 ): ProfileAccess['chatPolicies'] {
   const next = { ...policies };
   delete next[chatId];
+  return next;
+}
+
+function updateChatPolicy(
+  policies: ProfileAccess['chatPolicies'],
+  chatId: string,
+  updater: (current: ProfileAccess['chatPolicies'][string] | undefined) =>
+    ProfileAccess['chatPolicies'][string] | undefined,
+): ProfileAccess['chatPolicies'] {
+  const next = { ...policies };
+  const policy = compactChatPolicy(updater(next[chatId]));
+  if (policy) next[chatId] = policy;
+  else delete next[chatId];
+  return next;
+}
+
+function compactChatPolicy(
+  policy: ProfileAccess['chatPolicies'][string] | undefined,
+): ProfileAccess['chatPolicies'][string] | undefined {
+  if (!policy) return undefined;
+  return Object.keys(policy).length > 0 ? policy : undefined;
+}
+
+function clearNoAtPolicy(
+  policy: ProfileAccess['chatPolicies'][string] | undefined,
+): ProfileAccess['chatPolicies'][string] | undefined {
+  if (!policy) return undefined;
+  const next = { ...policy };
+  if (next.requireMention === false) delete next.requireMention;
+  if (next.responseMode === 'always') {
+    delete next.responseMode;
+    delete next.ambientLevel;
+  }
+  return next;
+}
+
+function clearAmbientPolicy(
+  policy: ProfileAccess['chatPolicies'][string] | undefined,
+): ProfileAccess['chatPolicies'][string] | undefined {
+  if (!policy) return undefined;
+  if (policy.responseMode !== 'ambient') return policy;
+  const next = { ...policy };
+  delete next.responseMode;
+  delete next.ambientLevel;
   return next;
 }
 
@@ -1575,19 +1647,23 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
         '• `/invite user @某人` — 加入允许私聊\n' +
         '• `/invite admin @某人` — 加入管理员\n' +
         '• `/invite group` — 把当前群加入响应群名单\n' +
+        '• `/invite group ambient [quiet|balanced|active]` — 当前群不 @ 时由模型判断是否参与\n' +
+        '• `/invite group history on|off` — 单独开启/关闭当前群历史记录\n' +
         '• `/invite all group` — 把 bot 所在的所有群一键加入',
     );
     return;
   }
 
   if (kind === 'group') {
-    const noAt = wantsNoAt(tokens);
-    if (hasGroupModifier(tokens) && !noAt) {
+    const modifier = parseGroupPolicyModifier(tokens);
+    if (!modifier) {
       await reply(
         ctx,
         '用法：\n' +
           '• `/invite group` — 把当前群加入响应群名单\n' +
-          '• `/invite group no-at` — 把当前群加入响应群名单，并允许不 @ 直接发消息',
+          '• `/invite group no-at` — 把当前群加入响应群名单，并允许不 @ 都回复\n' +
+          '• `/invite group ambient [quiet|balanced|active]` — 不 @ 时先判断是否适合参与\n' +
+          '• `/invite group history on|off` — 单独开启/关闭当前群历史记录',
       );
       return;
     }
@@ -1600,25 +1676,47 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
     await saveAccessConfig(ctx, (current) => {
       const list = new Set(current.allowedChats);
       already = list.has(chatId);
-      if (!already) list.add(chatId);
+      if (!already && modifier.kind !== 'history-off') list.add(chatId);
       return {
         ...current,
         allowedChats: [...list],
-        ...(noAt
-          ? {
-              chatPolicies: {
-                ...current.chatPolicies,
-                [chatId]: { requireMention: false },
-              },
-            }
-          : {}),
+        chatPolicies: applyInviteGroupPolicy(current.chatPolicies, chatId, modifier),
       };
     });
-    if (noAt) {
+    if (modifier.kind === 'no-at') {
       void promptGroupMsgScopeIfMissing(ctx).catch((err) =>
         log.warn('command', 'group-msg-scope-check-failed', { err: String(err) }),
       );
       await reply(ctx, `✅ 当前群（\`${chatId}\`）已加入响应群名单，并可不 @ 直接发消息。`);
+      return;
+    }
+    if (modifier.kind === 'ambient') {
+      void promptGroupMsgScopeIfMissing(ctx).catch((err) =>
+        log.warn('command', 'group-msg-scope-check-failed', { err: String(err) }),
+      );
+      await reply(
+        ctx,
+        `✅ 当前群（\`${chatId}\`）已加入响应群名单，并开启不 @ 看情况回复（${modifier.level}）。`,
+      );
+      return;
+    }
+    if (modifier.kind === 'history-on') {
+      const scopeStatus = await promptGroupMsgScopeIfMissing(ctx).catch((err) => {
+        log.warn('command', 'group-msg-scope-check-failed', { err: String(err) });
+        return 'unknown' as const;
+      });
+      const scopeNote = groupHistoryScopeNote(scopeStatus);
+      await reply(
+        ctx,
+        `✅ 已开启当前群（\`${chatId}\`）历史记录。只记录开启后的新消息；只会保存 bridge 实际收到的消息；` +
+          `后续 agent 可按需查询这些历史上下文。\n\n` +
+          `可用 \`lark-channel-bridge history status --chat ${chatId} --profile ${ctx.controls.profile}\` ` +
+          `检查是否已写入记录。${scopeNote}`,
+      );
+      return;
+    }
+    if (modifier.kind === 'history-off') {
+      await reply(ctx, `✅ 已关闭当前群历史记录；响应模式保持不变。`);
       return;
     }
     if (already) {
@@ -1665,6 +1763,39 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
   await reply(ctx, parts.join('\n'));
 }
 
+function applyInviteGroupPolicy(
+  policies: ProfileAccess['chatPolicies'],
+  chatId: string,
+  modifier: GroupPolicyModifier,
+): ProfileAccess['chatPolicies'] {
+  if (modifier.kind === 'none') return policies;
+  return updateChatPolicy(policies, chatId, (current) => {
+    if (modifier.kind === 'no-at') {
+      return {
+        ...current,
+        requireMention: false,
+        responseMode: 'always',
+      };
+    }
+    if (modifier.kind === 'ambient') {
+      const next = { ...current };
+      delete next.requireMention;
+      return {
+        ...next,
+        responseMode: 'ambient',
+        ambientLevel: modifier.level,
+      };
+    }
+    return {
+      ...current,
+      history: {
+        ...current?.history,
+        enabled: modifier.kind === 'history-on',
+      },
+    };
+  });
+}
+
 async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
   const tokens = args.trim().split(/\s+/).filter(Boolean).map((token) => token.toLowerCase());
   const kind = tokens.find((token) => /^(user|admin|group)$/.test(token)) as
@@ -1678,19 +1809,25 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
       '用法：\n' +
         '• `/remove user @某人` — 移出用户白名单\n' +
         '• `/remove admin @某人` — 移出管理员\n' +
-        '• `/remove group` — 把当前群移出响应群名单',
+        '• `/remove group` — 把当前群移出响应群名单\n' +
+        '• `/remove group no-at|ambient|history` — 只关闭当前群的对应策略',
     );
     return;
   }
 
   if (kind === 'group') {
     const noAt = wantsNoAt(tokens);
-    if (hasGroupModifier(tokens) && !noAt) {
+    const modifiers = groupModifierTokens(tokens);
+    const removeAmbient = modifiers.length === 1 && modifiers[0] === 'ambient';
+    const removeHistory = modifiers.length === 1 && modifiers[0] === 'history';
+    if (hasGroupModifier(tokens) && !noAt && !removeAmbient && !removeHistory) {
       await reply(
         ctx,
         '用法：\n' +
           '• `/remove group` — 把当前群移出响应群名单\n' +
-          '• `/remove group no-at` — 只关闭当前群的不 @ 直接发消息设置，保留响应群名单',
+          '• `/remove group no-at` — 只关闭当前群的不 @ 都回复设置，保留响应群名单\n' +
+          '• `/remove group ambient` — 只关闭当前群的不 @ 看情况回复设置，保留响应群名单\n' +
+          '• `/remove group history` — 只关闭当前群历史记录，保留响应群名单',
       );
       return;
     }
@@ -1702,11 +1839,13 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
     if (noAt) {
       let hadNoAtPolicy = false;
       await saveAccessConfig(ctx, (current) => {
-        hadNoAtPolicy = current.chatPolicies[chatId]?.requireMention === false;
+        hadNoAtPolicy =
+          current.chatPolicies[chatId]?.requireMention === false ||
+          current.chatPolicies[chatId]?.responseMode === 'always';
         if (!hadNoAtPolicy) return current;
         return {
           ...current,
-          chatPolicies: withoutChatPolicy(current.chatPolicies, chatId),
+          chatPolicies: updateChatPolicy(current.chatPolicies, chatId, clearNoAtPolicy),
         };
       });
       if (hadNoAtPolicy) {
@@ -1714,6 +1853,46 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
         return;
       }
       await reply(ctx, '当前群没有单独的不 @ 设置，无需移除；响应群名单保持不变。');
+      return;
+    }
+    if (removeAmbient) {
+      let hadAmbientPolicy = false;
+      await saveAccessConfig(ctx, (current) => {
+        hadAmbientPolicy = current.chatPolicies[chatId]?.responseMode === 'ambient';
+        if (!hadAmbientPolicy) return current;
+        return {
+          ...current,
+          chatPolicies: updateChatPolicy(current.chatPolicies, chatId, clearAmbientPolicy),
+        };
+      });
+      if (hadAmbientPolicy) {
+        await reply(ctx, '✅ 已关闭当前群的不 @ 看情况回复设置；当前群仍保留在响应群名单里。');
+        return;
+      }
+      await reply(ctx, '当前群没有单独的不 @ 看情况回复设置，无需移除；响应群名单保持不变。');
+      return;
+    }
+    if (removeHistory) {
+      let remainsAllowed = false;
+      await saveAccessConfig(ctx, (current) => {
+        remainsAllowed = current.allowedChats.includes(chatId);
+        return {
+          ...current,
+          chatPolicies: updateChatPolicy(current.chatPolicies, chatId, (policy) => ({
+            ...policy,
+            history: {
+              ...policy?.history,
+              enabled: false,
+            },
+          })),
+        };
+      });
+      await reply(
+        ctx,
+        remainsAllowed
+          ? '✅ 已关闭当前群历史记录；当前群仍保留在响应群名单里。'
+          : '✅ 已关闭当前群历史记录；当前群不在响应群名单里，响应权限保持不变。',
+      );
       return;
     }
     let missing = false;
@@ -2090,11 +2269,14 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
  * authorizing, swap the card to a success state in place. Best-effort — any
  * failure here is logged and swallowed (the saved-config card already showed).
  */
-async function promptGroupMsgScopeIfMissing(ctx: CommandContext): Promise<void> {
+type GroupMsgScopeStatus = 'present' | 'missing-card-sent' | 'missing-card-failed' | 'unknown';
+
+async function promptGroupMsgScopeIfMissing(ctx: CommandContext): Promise<GroupMsgScopeStatus> {
   const appId = ctx.controls.cfg.accounts.app.id;
   // `false` = confirmed missing; `null` = lookup failed → don't nag.
   const has = await hasGroupMsgScope(ctx.channel, appId);
-  if (has !== false) return;
+  if (has === true) return 'present';
+  if (has === null) return 'unknown';
   log.info('command', 'group-msg-scope-missing', { appId });
 
   let link;
@@ -2102,7 +2284,7 @@ async function promptGroupMsgScopeIfMissing(ctx: CommandContext): Promise<void> 
     link = await requestScopeGrantLink({ appId, tenantScopes: [GROUP_MSG_SCOPE] });
   } catch (err) {
     log.warn('command', 'scope-grant-link-failed', { err: String(err) });
-    return;
+    return 'missing-card-failed';
   }
 
   const expireMins = Math.max(1, Math.round(link.expireIn / 60));
@@ -2115,7 +2297,7 @@ async function promptGroupMsgScopeIfMissing(ctx: CommandContext): Promise<void> 
     );
   } catch (err) {
     log.warn('command', 'scope-grant-card-send-failed', { err: String(err) });
-    return;
+    return 'missing-card-failed';
   }
 
   // Detached: flip the card to "授权成功" once the user authorizes (or just
@@ -2133,6 +2315,20 @@ async function promptGroupMsgScopeIfMissing(ctx: CommandContext): Promise<void> 
       forgetManagedCard(sent.messageId);
     },
   );
+  return 'missing-card-sent';
+}
+
+function groupHistoryScopeNote(status: GroupMsgScopeStatus): string {
+  if (status === 'present') {
+    return '\n\n已确认应用具备 `im:message.group_msg` 权限；新的非 @ 群消息在 bridge 收到后会进入历史。';
+  }
+  if (status === 'missing-card-sent') {
+    return '\n\n⚠️ 当前应用还缺少 `im:message.group_msg` 权限；已发送补授权卡。授权前，飞书不会把非 @ 群消息推给 bot，所以这些消息不会进入历史。';
+  }
+  if (status === 'missing-card-failed') {
+    return '\n\n⚠️ 当前应用还缺少 `im:message.group_msg` 权限，但补授权卡发送失败。授权前，非 @ 群消息不会进入历史；请检查应用权限后 `/reconnect`。';
+  }
+  return '\n\n提示：历史只记录 bridge 收到的新消息。若 status 一直是 0，请确认飞书应用已授权 `im:message.group_msg`，然后发 `/reconnect`。';
 }
 
 function configFailureMessage(step: string, rollbackFailed: boolean, larkCliPolicyApplied: boolean): string {

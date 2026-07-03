@@ -1,5 +1,6 @@
 import * as p from '@clack/prompts';
 import { readFile } from 'node:fs/promises';
+import { installBridgeAgentSkills } from '../agent/bridge-skill-installer';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../agent/lark-channel-env';
 import type { AppPaths } from '../config/app-paths';
 import {
@@ -49,7 +50,16 @@ export interface PreFlightOptions {
 }
 
 export async function preFlightChecks(opts: PreFlightOptions): Promise<void> {
+  await checkBridgeAgentSkills();
   await checkLarkCli(opts);
+}
+
+async function checkBridgeAgentSkills(): Promise<void> {
+  await installBridgeAgentSkills().catch((err) => {
+    log.warn('agent-skill', 'install-failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  });
 }
 
 async function checkLarkCli(opts: PreFlightOptions): Promise<void> {

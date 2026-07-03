@@ -5,6 +5,15 @@ import type {
 } from '@larksuite/channel';
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
+import {
+  ambientPrefilter,
+  isSlashCommand,
+} from '../ambient/policy';
+import {
+  runAmbientDecision,
+  type AmbientDecision,
+  type AmbientDecisionMessage,
+} from '../ambient/decision-runner';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import { modelLabel, normalizeModelSelection, resolveModelArg } from '../agent/models';
 import {
@@ -32,12 +41,13 @@ import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
   getAgentStopGraceMs,
+  getChatHistoryPolicy,
+  getChatResponseMode,
   getCotMessages,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRunIdleTimeoutMs,
   getShowToolCalls,
-  shouldRequireMentionInChat,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
@@ -47,8 +57,10 @@ import {
   toPromptAttachment,
 } from '../media/attachment';
 import { canUseDm, canUseGroup } from '../policy/access';
-import type { ScopeContext } from '../policy/run-policy';
+import type { AccessDecision } from '../policy/access';
+import { evaluateRunPolicy, type ScopeContext } from '../policy/run-policy';
 import { createOwnerRefreshController } from '../policy/owner';
+import { resolveWorkingDirectory } from '../policy/workspace';
 import { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
@@ -66,6 +78,7 @@ import { lookupMessageThreadId } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
+import { ChatHistoryStore, type ChatHistoryMessage } from '../history/store';
 import {
   consumeCotEvents,
   CotClient,
@@ -76,6 +89,7 @@ import {
 const DEBOUNCE_MS = 600;
 const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
+const AMBIENT_RECENT_LIMIT = 50;
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
   '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
@@ -176,8 +190,18 @@ export interface StartChannelDeps {
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
   controls: Controls;
-  appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
+  appPaths?: Partial<Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'historyDir'>>;
+  ambientDecisionRunner?: AmbientDecisionRunner;
 }
+
+export type AmbientDecisionRunner = (input: {
+  scope: string;
+  access: AccessDecision;
+  message: AmbientDecisionMessage;
+  recentMessages: AmbientDecisionMessage[];
+  level: 'quiet' | 'balanced' | 'active';
+  cwd: string;
+}) => Promise<AmbientDecision>;
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
   const { cfg, agent, sessions, sessionCatalog, workspaces, controls } = deps;
@@ -194,7 +218,13 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing
   // the encrypted keystore / env / file / exec provider. Re-resolved on
   // every startChannel so /account change picks up new secrets.
-  const appSecret = await resolveAppSecret(cfg, deps.appPaths);
+  const appSecretPaths = deps.appPaths?.secretsFile && deps.appPaths.keystoreSaltFile
+    ? {
+        secretsFile: deps.appPaths.secretsFile,
+        keystoreSaltFile: deps.appPaths.keystoreSaltFile,
+      }
+    : undefined;
+  const appSecret = await resolveAppSecret(cfg, appSecretPaths);
   const callbackNonceStore = deps.appPaths?.mediaDir
     ? new CallbackNonceStore(join(dirname(deps.appPaths.mediaDir), 'callback-nonces.json'))
     : undefined;
@@ -269,6 +299,31 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   const channel = createLarkChannel(opts);
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
+  const historyStore = deps.appPaths?.historyDir
+    ? new ChatHistoryStore(deps.appPaths.historyDir)
+    : undefined;
+  const ambientRecent = new Map<string, AmbientDecisionMessage[]>();
+  const ambientDecisionPool = new ProcessPool(() => Math.min(2, getMaxConcurrentRuns(controls.cfg)));
+  const rawAmbientDecisionRunner: AmbientDecisionRunner =
+    deps.ambientDecisionRunner ??
+    ((input) =>
+      runAmbientDecision({
+        ...input,
+        startRun: async (prompt) => startAmbientDecisionRun({
+          input,
+          prompt,
+          controls,
+          executor,
+        }),
+      }));
+  const ambientDecisionRunner: AmbientDecisionRunner = async (input) => {
+    const release = await ambientDecisionPool.acquire();
+    try {
+      return await rawAmbientDecisionRunner(input);
+    } finally {
+      release();
+    }
+  };
 
   // Pending → run handoff: while a run is active on a chat, block its pending
   // queue so messages keep accumulating without flushing. When the run ends,
@@ -347,6 +402,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           logThreadModeOverride,
           executor,
           pool,
+          historyStore,
+          ambientRecent,
+          ambientDecisionRunner,
         }),
       ).catch((err) => log.fail('intake', err));
     },
@@ -544,6 +602,9 @@ interface IntakeDeps {
   logThreadModeOverride: LogThreadModeOverride;
   executor: RunExecutor;
   pool: ProcessPool;
+  historyStore?: ChatHistoryStore;
+  ambientRecent: Map<string, AmbientDecisionMessage[]>;
+  ambientDecisionRunner: AmbientDecisionRunner;
 }
 
 type LogThreadModeOverride = (input: {
@@ -567,6 +628,9 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     logThreadModeOverride,
     executor,
     pool,
+    historyStore,
+    ambientRecent,
+    ambientDecisionRunner,
   } = deps;
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
@@ -639,19 +703,71 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     return;
   }
 
-  // Group-mention policy. p2p is always unrestricted; in groups (regular and
-  // topic) we drop messages that don't @bot when the user has opted into the
-  // quiet-by-default behavior. Slash commands are NOT exempt — the user
-  // chose strict mode so the group stays uniformly quiet unless mentioned.
-  // @全员 is already filtered by SDK (`respondToMentionAll: false`), so any
-  // event reaching here is either targeted or undirected chatter.
-  if (
-    msg.chatType !== 'p2p' &&
-    shouldRequireMentionInChat(controls.cfg, msg.chatId) &&
-    !msg.mentionedBot
-  ) {
-    log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
-    return;
+  const recentBefore = ambientRecent.get(scope) ?? [];
+  const ambientMessage = toAmbientDecisionMessage(msg);
+  if (msg.chatType !== 'p2p') {
+    const historyPolicy = getChatHistoryPolicy(controls.cfg, msg.chatId);
+    if (historyPolicy.enabled && historyStore) {
+      await historyStore.append(toChatHistoryMessage(msg), {
+        retentionDays: historyPolicy.retentionDays,
+        maxMessages: historyPolicy.maxMessages,
+      }).then(() => {
+        log.info('history', 'append-ok', {
+          scope,
+          msgId: msg.messageId,
+          mentionedBot: msg.mentionedBot,
+          retentionDays: historyPolicy.retentionDays,
+          maxMessages: historyPolicy.maxMessages,
+        });
+      }).catch((err) => {
+        log.warn('history', 'append-failed', {
+          scope,
+          msgId: msg.messageId,
+          err: String((err as Error).message ?? err),
+        });
+      });
+    }
+    rememberAmbientMessage(ambientRecent, scope, ambientMessage);
+  }
+
+  if (msg.chatType !== 'p2p' && !msg.mentionedBot) {
+    const responseMode = getChatResponseMode(controls.cfg, msg.chatId);
+    if (responseMode.mode === 'mention-only') {
+      log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
+      return;
+    }
+    if (responseMode.mode === 'ambient' && !isSlashCommand(msg.content)) {
+      const prefilter = ambientPrefilter(msg, responseMode.ambientLevel);
+      if (!prefilter.pass) {
+        log.info('intake', 'skip-ambient-prefilter', {
+          scope,
+          chatType: msg.chatType,
+          reason: prefilter.reason,
+        });
+        return;
+      }
+      const decision = await ambientDecisionRunner({
+        scope,
+        access: accessDecision,
+        message: ambientMessage,
+        recentMessages: recentBefore,
+        level: responseMode.ambientLevel,
+        cwd: ambientDecisionCwd(controls),
+      });
+      if (!decision.respond) {
+        log.info('intake', 'skip-ambient-decision', {
+          scope,
+          chatType: msg.chatType,
+          reason: decision.reason,
+        });
+        return;
+      }
+      log.info('intake', 'ambient-decision-accepted', {
+        scope,
+        chatType: msg.chatType,
+        reason: decision.reason,
+      });
+    }
   }
 
   const handled = await tryHandleCommand({
@@ -684,6 +800,108 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
 
   const size = pending.push(scope, emsg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
+}
+
+function toAmbientDecisionMessage(msg: NormalizedMessage): AmbientDecisionMessage {
+  return {
+    messageId: msg.messageId,
+    chatId: msg.chatId,
+    ...(msg.threadId ? { threadId: msg.threadId } : {}),
+    senderId: msg.senderId,
+    content: msg.content,
+    createdAt: messageCreatedAtIso(msg),
+  };
+}
+
+function toChatHistoryMessage(msg: NormalizedMessage): ChatHistoryMessage {
+  return {
+    messageId: msg.messageId,
+    chatId: msg.chatId,
+    ...(msg.threadId ? { threadId: msg.threadId } : {}),
+    chatType: msg.chatType,
+    senderId: msg.senderId,
+    content: msg.content,
+    mentionedBot: msg.mentionedBot,
+    mentions: msg.mentions.map((mention) =>
+      mention.openId ?? mention.name ?? mention.key,
+    ),
+    createdAt: messageCreatedAtIso(msg),
+    recordedAt: new Date().toISOString(),
+  };
+}
+
+function rememberAmbientMessage(
+  recent: Map<string, AmbientDecisionMessage[]>,
+  scope: string,
+  message: AmbientDecisionMessage,
+): void {
+  const next = [...(recent.get(scope) ?? []), message].slice(-AMBIENT_RECENT_LIMIT);
+  recent.set(scope, next);
+}
+
+function ambientDecisionCwd(controls: Controls): string {
+  return controls.profileConfig.workspaces.default ?? process.cwd();
+}
+
+async function startAmbientDecisionRun(input: {
+  input: Parameters<AmbientDecisionRunner>[0];
+  prompt: string;
+  controls: Controls;
+  executor: RunExecutor;
+}) {
+  const requestedCwd = input.input.cwd;
+  const workspace = await resolveWorkingDirectory(requestedCwd);
+  if (!workspace.ok) {
+    throw new Error(`workspace-${workspace.reason}`);
+  }
+  const capability =
+    input.controls.profileConfig.agentKind === 'codex'
+      ? codexCapability(input.controls.profileConfig)
+      : claudeCapability(input.controls.profileConfig);
+  const policy = evaluateRunPolicy({
+    scope: {
+      source: 'im',
+      chatId: input.input.message.chatId,
+      actorId: input.input.message.senderId,
+      ...(input.input.message.threadId ? { threadId: input.input.message.threadId } : {}),
+    },
+    attachments: [],
+    prompt: input.prompt,
+    requestedCwd,
+    cwdRealpath: workspace.cwdRealpath,
+    access: input.input.access,
+    capability,
+    profileConfig: input.controls.profileConfig,
+    now: Date.now(),
+    codexHome: input.controls.profileConfig.codex?.codexHome,
+    inheritCodexHome: input.controls.profileConfig.codex?.inheritCodexHome,
+    ttlMs: 30_000,
+  });
+  if (!policy.ok) {
+    throw new Error(`policy-${policy.rejectReason.code}`);
+  }
+  const execution = await input.executor.submit({
+    scopeId: `${input.input.scope}:ambient-decision:${input.input.message.messageId}`,
+    policy,
+    stopGraceMs: 500,
+    observability: {
+      profile: input.controls.profile,
+      agent: capability.agentId,
+      source: 'im',
+      stage: 'ambient-decision',
+    },
+  });
+  return {
+    events: execution.subscribe(),
+    stop: execution.stop,
+  };
+}
+
+function messageCreatedAtIso(msg: NormalizedMessage): string {
+  const raw = (msg as NormalizedMessage & { createTime?: unknown }).createTime;
+  const ms = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+  if (Number.isFinite(ms) && ms > 0) return new Date(ms).toISOString();
+  return new Date().toISOString();
 }
 
 interface RunBatchDeps {
@@ -820,6 +1038,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     topicContext,
     channel.botIdentity,
     extraInstructions,
+    controls,
   );
   log.info('prompt', 'built', {
     promptChars: prompt.length,
@@ -1481,6 +1700,7 @@ function buildPrompt(
   topicContext: QuotedContext[] = [],
   botIdentity?: { openId: string; name?: string },
   extraInstructions?: string[],
+  controls?: Controls,
 ): string {
   const first = batch[0];
   if (!first) return '';
@@ -1520,16 +1740,33 @@ function buildPrompt(
       messageIds: batch.map((m) => m.messageId),
       source: 'im',
     },
-    instructions:
-      extraInstructions && extraInstructions.length > 0
-        ? [...BRIDGE_AGENT_INSTRUCTIONS, ...extraInstructions]
-        : BRIDGE_AGENT_INSTRUCTIONS,
+    instructions: [
+      ...BRIDGE_AGENT_INSTRUCTIONS,
+      ...(extraInstructions ?? []),
+      ...chatHistoryInstructions(first, controls),
+    ],
     userInput: userPart,
     ...(topicContext.length > 0 ? { topicContext: topicContext.map(toPromptTopicMessage) } : {}),
     quotedMessages: quotes.map(toPromptQuote),
     interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
     attachments: attachments.map(toPromptAttachment),
   });
+}
+
+function chatHistoryInstructions(msg: NormalizedMessage, controls: Controls | undefined): string[] {
+  if (!controls) return [];
+  if (!getChatHistoryPolicy(controls.cfg, msg.chatId).enabled) return [];
+  const threadOpt = msg.threadId ? ` --thread ${msg.threadId}` : '';
+  return [
+    '当前群已显式开启 bridge 历史记录。你不是自动看到所有群消息，但可以按需查询当前群开启历史后记录到的未 @ 消息。',
+    '当用户询问你能否读取未 @ 群消息、让你基于群历史/上下文回答，或问题明显依赖此前讨论时，应先运行历史查询 CLI 再回答。',
+    '不要回答“完全看不到未 @ 的群消息”；应说明可查询的是当前群开启 history 后由 bridge 记录到的历史。没有实际调用前，不要声称已经读取历史。',
+    '如果历史查询返回空数组，应说明当前 profile/chat 暂无已记录消息；可能是开启后还没有新消息、bridge 没收到非 @ 事件、应用缺少 im:message.group_msg 权限，或需要 /reconnect。',
+    `最近消息: lark-channel-bridge history tail --chat ${msg.chatId}${threadOpt} --limit 50 --profile ${controls.profile}`,
+    `搜索历史: lark-channel-bridge history search --chat ${msg.chatId}${threadOpt} --query "<关键词>" --limit 20 --profile ${controls.profile}`,
+    `围绕消息: lark-channel-bridge history around --chat ${msg.chatId} --message <message_id> --before 30 --after 10 ` +
+      `--profile ${controls.profile}`,
+  ];
 }
 
 /**

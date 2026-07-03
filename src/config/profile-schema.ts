@@ -1,6 +1,9 @@
 import type {
+  AmbientLevel,
   AppCredentials,
   AppPreferences,
+  ChatHistoryPolicy,
+  ChatResponseMode,
   MessageReplyMode,
   SecretsConfig,
 } from './schema';
@@ -19,6 +22,9 @@ export type { AccessMode, PermissionConfig, PermissionSource };
 
 export interface ChatPolicyConfig {
   requireMention?: boolean;
+  responseMode?: ChatResponseMode;
+  ambientLevel?: AmbientLevel;
+  history?: Partial<ChatHistoryPolicy>;
 }
 
 export interface ProfileAccess {
@@ -270,12 +276,60 @@ function normalizeChatPolicies(input: unknown): Record<string, ChatPolicyConfig>
   const out: Record<string, ChatPolicyConfig> = {};
   for (const [chatId, rawPolicy] of Object.entries(input as Record<string, unknown>)) {
     if (!chatId || !rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) continue;
+    const policy: ChatPolicyConfig = {};
     const requireMention = (rawPolicy as { requireMention?: unknown }).requireMention;
     if (typeof requireMention === 'boolean') {
-      out[chatId] = { requireMention };
+      policy.requireMention = requireMention;
+    }
+    const responseMode = (rawPolicy as { responseMode?: unknown }).responseMode;
+    if (isChatResponseMode(responseMode)) {
+      policy.responseMode = responseMode;
+    }
+    const ambientLevel = (rawPolicy as { ambientLevel?: unknown }).ambientLevel;
+    if (isAmbientLevel(ambientLevel)) {
+      policy.ambientLevel = ambientLevel;
+    }
+    const history = normalizeChatHistoryPolicy((rawPolicy as { history?: unknown }).history);
+    if (history) {
+      policy.history = history;
+    }
+    if (Object.keys(policy).length > 0) {
+      out[chatId] = policy;
     }
   }
   return out;
+}
+
+function isChatResponseMode(value: unknown): value is ChatResponseMode {
+  return value === 'mention-only' || value === 'ambient' || value === 'always';
+}
+
+function isAmbientLevel(value: unknown): value is AmbientLevel {
+  return value === 'quiet' || value === 'balanced' || value === 'active';
+}
+
+function normalizeChatHistoryPolicy(input: unknown): Partial<ChatHistoryPolicy> | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const raw = input as {
+    enabled?: unknown;
+    retentionDays?: unknown;
+    maxMessages?: unknown;
+  };
+  const history: Partial<ChatHistoryPolicy> = {};
+  if (typeof raw.enabled === 'boolean') {
+    history.enabled = raw.enabled;
+  }
+  if (isPositiveFiniteInteger(raw.retentionDays)) {
+    history.retentionDays = raw.retentionDays;
+  }
+  if (isPositiveFiniteInteger(raw.maxMessages)) {
+    history.maxMessages = raw.maxMessages;
+  }
+  return Object.keys(history).length > 0 ? history : undefined;
+}
+
+function isPositiveFiniteInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value > 0;
 }
 
 function normalizeWorkspaces(input: {

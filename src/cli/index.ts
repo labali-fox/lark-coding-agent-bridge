@@ -1,6 +1,12 @@
 import { Command } from 'commander';
 import pkg from '../../package.json';
 import { formatAgentPreflightDiagnostic, getAgentPreflightDiagnostic } from '../agent/preflight';
+import {
+  runHistoryAround,
+  runHistorySearch,
+  runHistoryStatus,
+  runHistoryTail,
+} from './commands/history';
 import { runMigrate } from './commands/migrate';
 import { runKillCli, runPs } from './commands/ps';
 import {
@@ -132,6 +138,74 @@ profile
       includeSecrets: opts.includeSecrets,
       yes: opts.yes,
     });
+  });
+
+const history = program
+  .command('history')
+  .description('Inspect opt-in group chat history captured by this bridge profile');
+
+history
+  .command('tail')
+  .description('Show recent messages for a chat as JSON')
+  .requiredOption('--chat <chatId>', 'chat_id to inspect')
+  .option('--thread <threadId>', 'topic/thread id to filter within the chat')
+  .option('--limit <n>', 'number of messages to return (default 50)')
+  .option('--profile <name>', 'profile name (defaults to active profile)')
+  .action(async (opts: {
+    chat: string;
+    thread?: string;
+    limit?: string;
+    profile?: string;
+  }) => {
+    await runHistoryTail(opts);
+  });
+
+history
+  .command('status')
+  .description('Show capture status and storage location for a chat')
+  .requiredOption('--chat <chatId>', 'chat_id to inspect')
+  .option('--profile <name>', 'profile name (defaults to active profile)')
+  .action(async (opts: {
+    chat: string;
+    profile?: string;
+  }) => {
+    await runHistoryStatus(opts);
+  });
+
+history
+  .command('search')
+  .description('Search messages in a chat as JSON')
+  .requiredOption('--chat <chatId>', 'chat_id to inspect')
+  .requiredOption('--query <text>', 'case-insensitive substring to search')
+  .option('--thread <threadId>', 'topic/thread id to filter within the chat')
+  .option('--limit <n>', 'number of messages to return (default 20)')
+  .option('--profile <name>', 'profile name (defaults to active profile)')
+  .action(async (opts: {
+    chat: string;
+    query: string;
+    thread?: string;
+    limit?: string;
+    profile?: string;
+  }) => {
+    await runHistorySearch(opts);
+  });
+
+history
+  .command('around')
+  .description('Show messages around a known message id as JSON')
+  .requiredOption('--chat <chatId>', 'chat_id to inspect')
+  .requiredOption('--message <messageId>', 'message_id to center the result on')
+  .option('--before <n>', 'messages before the target (default 30)')
+  .option('--after <n>', 'messages after the target (default 10)')
+  .option('--profile <name>', 'profile name (defaults to active profile)')
+  .action(async (opts: {
+    chat: string;
+    message: string;
+    before?: string;
+    after?: string;
+    profile?: string;
+  }) => {
+    await runHistoryAround(opts);
   });
 
 program
