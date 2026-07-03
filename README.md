@@ -150,8 +150,10 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/invite admin @name` | Add an access-control admin |
 | `/invite group` | Allow the current group to use the bot |
 | `/invite group no-at` | Allow the current group and let it respond without `@bot` |
+| `/invite group ambient [quiet\|balanced\|active]` | Allow the current group and let unmentioned messages be judged before replying |
+| `/invite group history on\|off` | Enable or disable durable history for the current group; off by default |
 | `/invite all group` | Allow all groups the bot has joined |
-| `/remove user @name`, `/remove admin @name`, `/remove group`, `/remove group no-at` | Remove access entries or the current group's no-@ override |
+| `/remove user @name`, `/remove admin @name`, `/remove group`, `/remove group no-at`, `/remove group ambient`, `/remove group history` | Remove access entries or a single current-group policy |
 | `/stop` | Stop the current run, including the card stop button |
 | `/timeout [N\|off\|default]` | Set or clear the current session idle watchdog |
 | `/ps` | List local bridge processes |
@@ -160,7 +162,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/doctor [description]` | Run low-sensitive diagnostics |
 | `/help` | Help card |
 
-DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
+DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. A group can opt into `no-at` (reply to every unmentioned message) or `ambient` (judge whether to participate first). Cloud-doc comments in supported document types run when the bot is mentioned.
 
 ## Reply Display and COT
 
@@ -232,6 +234,8 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | Profile-local lark-cli directory |
 | `~/.lark-channel/profiles/<profile>/media/` | Attachment cache |
 | `~/.lark-channel/profiles/<profile>/logs/` | Structured run logs |
+| `~/.claude/skills/lark-channel-bridge/SKILL.md` | Managed Claude Code skill that teaches when to call bridge history CLI |
+| `~/.agents/skills/lark-channel-bridge/SKILL.md` | Managed Codex skill that teaches when to call bridge history CLI |
 | `~/.lark-channel/registry/processes.json` | Local process registry |
 | `~/.lark-channel/registry/locks/` | Profile and app locks |
 
@@ -247,7 +251,8 @@ To let other people or groups in, add them to one of three lists:
 |------|----------|-----|--------|
 | **Allowed users** | who can DM the bot | `/invite user @them` | `/remove user @them` |
 | **Allowed chats** | which groups the bot answers in (for **everyone** in them) | `/invite group` (current group) / `/invite all group` (every group the bot is in) | `/remove group` (current group) |
-| **No-@ chats** | allowed groups where normal messages reach the bot without `@bot` | `/invite group no-at` (current group) | `/remove group no-at` (keeps the group allowed) |
+| **No-@ chats** | allowed groups where normal messages reach the bot without `@bot` | `/invite group no-at` (reply to all) / `/invite group ambient` (participate selectively) | `/remove group no-at` / `/remove group ambient` (keeps the group allowed) |
+| **History** | whether current-group messages are durably recorded for later agent lookup | `/invite group history on` | `/invite group history off` or `/remove group history` |
 | **Admins** | who can change settings, and use the bot in any group | `/invite admin @them` | `/remove admin @them` |
 
 > `/invite` and `/remove` can only be run by **you (the creator) and admins**. The `@` in the command points at the *target person* (not the bot) — the bot resolves the mention to their identity, so you never deal with raw IDs.
@@ -263,13 +268,16 @@ To let other people or groups in, add them to one of three lists:
 - **Let a teammate DM the bot** → `/invite user @them`
 - **Open a work group to everyone in it** → send `/invite group` inside that group
 - **Open a group and let it respond without `@bot`** → send `/invite group no-at` inside that group
+- **Let a group behave more like a normal participant** → send `/invite group ambient`, optionally with `quiet`, `balanced`, or `active`
+- **Let the agent look up this group's prior context when needed** → send `/invite group history on`; history is off by default
 - **First-time setup, onboard every group the bot is already in** → `/invite all group` pulls them all into the list at once; trim with `/remove group` afterwards
 - **Add a co-admin** → `/invite admin @them`
 
 ### Worth knowing
 
 - Changes take effect on the **next message** — no restart needed.
-- **In groups you must `@` the bot first by default** (DMs don't need it). Use `/invite group no-at` in a specific allowed group to override that group only, or `/config` to change the global default.
+- **In groups you must `@` the bot first by default** (DMs don't need it). Use `/invite group no-at` to reply to all unmentioned messages, or `/invite group ambient` to judge whether to participate first. `/config` can still change the global default.
+- **History is off by default**. Only after `/invite group history on` does the bridge durably record new group messages and expose `lark-channel-bridge history tail/search/around` guidance to the agent. Bridge startup also installs a managed `lark-channel-bridge` skill for Claude Code and Codex so future runs know when to call the history CLI. Use `lark-channel-bridge history status --chat <chat_id> --profile <profile>` to check whether the current profile is actually writing records. The agent does not automatically see every group message; it can query messages recorded after history was enabled when the task needs that context. Non-@ group messages can only be recorded if Feishu/Lark delivers them to the bridge; after app/event changes, run `/reconnect` if needed.
 - Strangers get pure silence — no reply at all. The one exception: if someone `@`-mentions the bot in a group that hasn't been opened up, the bot posts a friendly one-liner telling them an admin can run `/invite group` to enable it.
 - Cloud-doc comments are document-scoped: anyone who can comment in a supported document and mention the bot can trigger a reply.
 
@@ -290,7 +298,13 @@ If you'd rather not do it inside Feishu, `/invite` and `/config` write the match
         "requireMentionInGroup": true,
         "chatPolicies": {
           "oc_xxxxxxxxxxxxx": {
-            "requireMention": false
+            "requireMention": false,
+            "responseMode": "always"
+          },
+          "oc_yyyyyyyyyyyyy": {
+            "responseMode": "ambient",
+            "ambientLevel": "balanced",
+            "history": { "enabled": true }
           }
         }
       }

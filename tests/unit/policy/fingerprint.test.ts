@@ -157,6 +157,45 @@ describe('policy fingerprint', () => {
 
     expect(open).not.toBe(strict);
   });
+
+  it('includes ambient and history chat policies in the access digest', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'claude',
+      accounts: {
+        app: {
+          id: 'cli_test',
+          secret: '${APP_SECRET}',
+          tenant: 'feishu',
+        },
+      },
+      access: {
+        allowedChats: ['oc_group'],
+      },
+    });
+
+    const ambient = accessPolicyDigest({
+      ...profile.access,
+      chatPolicies: {
+        oc_group: {
+          responseMode: 'ambient',
+          ambientLevel: 'balanced',
+          history: { enabled: false },
+        },
+      },
+    });
+    const historyEnabled = accessPolicyDigest({
+      ...profile.access,
+      chatPolicies: {
+        oc_group: {
+          responseMode: 'ambient',
+          ambientLevel: 'balanced',
+          history: { enabled: true },
+        },
+      },
+    });
+
+    expect(ambient).not.toBe(historyEnabled);
+  });
 });
 
 function baseInput(): FingerprintInputV2 {

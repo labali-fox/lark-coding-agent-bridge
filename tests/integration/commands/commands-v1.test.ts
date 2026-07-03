@@ -384,6 +384,124 @@ describe('Bridge command contracts', () => {
     expect(lastMarkdown(h.channel)).not.toContain('无需重复添加');
   });
 
+  it('manages current-group ambient response policy through /invite and /remove group flags', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('/invite group ambient quiet', {
+        chatId: 'oc-ambient',
+        scope: 'oc-ambient',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    let root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toContain('oc-ambient');
+    expect(root?.profiles.claude?.access.chatPolicies['oc-ambient']).toMatchObject({
+      responseMode: 'ambient',
+      ambientLevel: 'quiet',
+    });
+    expect(lastMarkdown(h.channel)).toContain('看情况');
+
+    await expect(
+      h.run('/remove group ambient', {
+        chatId: 'oc-ambient',
+        scope: 'oc-ambient',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toContain('oc-ambient');
+    expect(root?.profiles.claude?.access.chatPolicies['oc-ambient']).toBeUndefined();
+    expect(lastMarkdown(h.channel)).toContain('已关闭当前群的不 @ 看情况回复');
+  });
+
+  it('manages current-group history policy independently from response mode', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('/invite group no-at', {
+        chatId: 'oc-history',
+        scope: 'oc-history',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      h.run('/invite group history on', {
+        chatId: 'oc-history',
+        scope: 'oc-history',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    let root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toContain('oc-history');
+    expect(root?.profiles.claude?.access.chatPolicies['oc-history']).toMatchObject({
+      requireMention: false,
+      responseMode: 'always',
+      history: { enabled: true },
+    });
+    expect(lastMarkdown(h.channel)).toContain('历史记录');
+    expect(lastMarkdown(h.channel)).toContain('只记录开启后的新消息');
+    expect(lastMarkdown(h.channel)).toContain('agent 可按需查询');
+
+    await expect(
+      h.run('/invite group history off', {
+        chatId: 'oc-history',
+        scope: 'oc-history',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.chatPolicies['oc-history']).toMatchObject({
+      requireMention: false,
+      responseMode: 'always',
+      history: { enabled: false },
+    });
+    expect(lastMarkdown(h.channel)).toContain('已关闭当前群历史记录');
+  });
+
+  it('does not invite a new group when only turning history off', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('/invite group history off', {
+        chatId: 'oc-history-off-only',
+        scope: 'oc-history-off-only',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).not.toContain('oc-history-off-only');
+    expect(root?.profiles.claude?.access.chatPolicies['oc-history-off-only']).toMatchObject({
+      history: { enabled: false },
+    });
+    expect(lastMarkdown(h.channel)).toContain('响应模式保持不变');
+  });
+
+  it('does not claim a never-invited group remains allowed when only removing history', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('/remove group history', {
+        chatId: 'oc-history-remove-only',
+        scope: 'oc-history-remove-only',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).not.toContain('oc-history-remove-only');
+    expect(root?.profiles.claude?.access.chatPolicies['oc-history-remove-only']).toMatchObject({
+      history: { enabled: false },
+    });
+    expect(lastMarkdown(h.channel)).not.toContain('仍保留在响应群名单里');
+    expect(lastMarkdown(h.channel)).toContain('当前群不在响应群名单里');
+  });
+
   it('treats no-at lookalike modifiers as no-at instead of removing the group', async () => {
     const h = await createHarness();
 

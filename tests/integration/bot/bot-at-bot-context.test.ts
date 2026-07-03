@@ -4,10 +4,15 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRootConfig, saveRootConfig } from '../../../src/config/profile-store.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
+import type { PermissionConfig } from '../../../src/config/permissions.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
+import { ChatHistoryStore } from '../../../src/history/store.js';
+import type { AmbientDecision } from '../../../src/ambient/decision-runner.js';
+import { getChatHistoryPolicy } from '../../../src/config/schema.js';
+import type { AgentEvent, AgentRun, AgentRunOptions } from '../../../src/agent/types.js';
 
 const sdkMock = vi.hoisted(() => ({
   channel: undefined as FakeLarkChannel | undefined,
@@ -153,6 +158,267 @@ describe('sender identity in bridge_context', () => {
       }),
     );
     await waitFor(() => open.agent.runOptions.length === 1);
+  });
+
+  it('does not persist group history unless explicitly enabled', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { requireMention: false },
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_no_history',
+        content: '不 @ 但不开历史',
+        mentionedBot: false,
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const store = new ChatHistoryStore(join(h.tmp.profile, 'history'));
+    await expect(store.tail({ chatId: 'oc_chat', limit: 10 })).resolves.toEqual([]);
+  });
+
+  it('persists allowed group messages when chat history is enabled even when mention-only skips reply', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { history: { enabled: true, retentionDays: 365 } },
+      },
+    });
+    expect(getChatHistoryPolicy(h.controls.cfg, 'oc_chat').enabled).toBe(true);
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_history_only',
+        content: '这条不 @，只应该记录历史',
+        mentionedBot: false,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(h.agent.runOptions).toHaveLength(0);
+    const store = new ChatHistoryStore(join(h.tmp.profile, 'history'));
+    await expect(store.tail({ chatId: 'oc_chat', limit: 10 })).resolves.toMatchObject([
+      {
+        messageId: 'om_history_only',
+        chatId: 'oc_chat',
+        content: '这条不 @，只应该记录历史',
+      },
+    ]);
+  });
+
+  it('uses ambient decision before queuing unmentioned group messages', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { responseMode: 'ambient', ambientLevel: 'balanced' },
+      },
+    });
+    const ambientDecisionRunner = vi.fn(async (): Promise<AmbientDecision> => ({
+      respond: false,
+      reason: 'not-needed',
+    }));
+    await startTestBridge(h, { ambientDecisionRunner });
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_ambient_skip',
+        content: '这个 TypeScript 报错怎么修？',
+        mentionedBot: false,
+      }),
+    );
+    await waitFor(() => ambientDecisionRunner.mock.calls.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 750));
+
+    expect(h.agent.runOptions).toHaveLength(0);
+  });
+
+  it('queues unmentioned group messages when ambient decision opts in', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { responseMode: 'ambient', ambientLevel: 'balanced' },
+      },
+    });
+    await startTestBridge(h, {
+      ambientDecisionRunner: async () => ({ respond: true, reason: 'useful' }),
+    });
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_ambient_reply',
+        content: '这个 TypeScript 报错怎么修？',
+        mentionedBot: false,
+      }),
+    );
+
+    await waitFor(() => h.agent.runOptions.length === 1);
+  });
+
+  it('runs ambient decisions through profile run policy', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { responseMode: 'ambient', ambientLevel: 'balanced' },
+      },
+      permissions: {
+        defaultAccess: 'read-only',
+        maxAccess: 'read-only',
+      },
+    });
+    h.agent.setEvents([
+      [
+        { type: 'text', delta: '{"respond":true,"reason":"useful"}' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      [{ type: 'done', terminationReason: 'normal' }],
+    ]);
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_ambient_policy',
+        content: '这个 TypeScript 报错怎么修？',
+        mentionedBot: false,
+      }),
+    );
+
+    await waitFor(() => h.agent.runOptions.length === 2);
+    expect(h.agent.runOptions[0]).toMatchObject({
+      sandbox: 'read-only',
+      permissionMode: 'plan',
+      cwd: h.profileConfig.workspaces.default,
+    });
+    expect(h.agent.runOptions[0]?.prompt).toContain('You decide whether a chat bot should participate');
+    expect(h.agent.runOptions[1]).toMatchObject({
+      sandbox: 'read-only',
+      permissionMode: 'plan',
+    });
+  });
+
+  it('allows concurrent default ambient decisions in the same group', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { responseMode: 'ambient', ambientLevel: 'balanced' },
+      },
+    });
+    const releases: Array<() => void> = [];
+    vi.spyOn(h.agent, 'run').mockImplementation((opts) => {
+      h.agent.runOptions.push(opts);
+      return controlledAmbientRun(opts, releases);
+    });
+    await startTestBridge(h);
+
+    const pending = [1, 2].map((index) => h.channel.handlers.message?.(
+      message({
+        messageId: `om_default_ambient_concurrent_${index}`,
+        content: `这个 TypeScript 报错怎么修？ ${index}`,
+        mentionedBot: false,
+      }),
+    ) as Promise<void>);
+
+    await waitFor(() => h.agent.runOptions.length === 2);
+    expect(h.agent.runOptions[0]?.prompt).toContain('You decide whether a chat bot should participate');
+    expect(h.agent.runOptions[1]?.prompt).toContain('You decide whether a chat bot should participate');
+
+    for (const release of releases.splice(0)) release();
+    await Promise.all(pending);
+    expect(h.agent.runOptions).toHaveLength(2);
+  });
+
+  it('limits concurrent ambient decisions before queuing unmentioned group messages', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { responseMode: 'ambient', ambientLevel: 'balanced' },
+      },
+    });
+    let active = 0;
+    let maxActive = 0;
+    const releases: Array<() => void> = [];
+    const ambientDecisionRunner = vi.fn(async (): Promise<AmbientDecision> => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      active -= 1;
+      return { respond: false, reason: 'skip' };
+    });
+    await startTestBridge(h, { ambientDecisionRunner });
+
+    const pending = [1, 2, 3].map((index) => h.channel.handlers.message?.(
+      message({
+        messageId: `om_ambient_limit_${index}`,
+        content: `这个 TypeScript 报错怎么修？ ${index}`,
+        mentionedBot: false,
+      }),
+    ) as Promise<void>);
+
+    await waitFor(() => ambientDecisionRunner.mock.calls.length === 2);
+    expect(maxActive).toBe(2);
+
+    releases.shift()?.();
+    await waitFor(() => ambientDecisionRunner.mock.calls.length === 3);
+    expect(maxActive).toBe(2);
+
+    for (const release of releases.splice(0)) release();
+    await Promise.all(pending);
+    expect(h.agent.runOptions).toHaveLength(0);
+  });
+
+  it('queues every unmentioned group message in always mode without ambient decision', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { responseMode: 'always' },
+      },
+    });
+    const ambientDecisionRunner = vi.fn(async (): Promise<AmbientDecision> => ({
+      respond: false,
+      reason: 'should-not-run',
+    }));
+    await startTestBridge(h, { ambientDecisionRunner });
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_always',
+        content: '普通群消息',
+        mentionedBot: false,
+      }),
+    );
+
+    await waitFor(() => h.agent.runOptions.length === 1);
+    expect(ambientDecisionRunner).not.toHaveBeenCalled();
+  });
+
+  it('only exposes history CLI guidance in prompts when chat history is enabled', async () => {
+    const disabled = await createHarness();
+    await startTestBridge(disabled);
+    await disabled.channel.handlers.message?.(
+      message({
+        messageId: 'om_history_disabled_prompt',
+        content: '@Bridge 看下上下文',
+      }),
+    );
+    await waitFor(() => disabled.agent.runOptions.length === 1);
+    expect(disabled.agent.runOptions[0]?.prompt).not.toContain('lark-channel-bridge history');
+
+    const enabled = await createHarness({
+      chatPolicies: {
+        oc_chat: { history: { enabled: true } },
+      },
+    });
+    await startTestBridge(enabled);
+    await enabled.channel.handlers.message?.(
+      message({
+        messageId: 'om_history_enabled_prompt',
+        content: '@Bridge 看下上下文',
+      }),
+    );
+    await waitFor(() => enabled.agent.runOptions.length === 1);
+    const prompt = enabled.agent.runOptions[0]?.prompt ?? '';
+    expect(prompt).toContain('lark-channel-bridge history tail --chat oc_chat');
+    expect(prompt).toContain('lark-channel-bridge history search --chat oc_chat');
+    expect(prompt).toContain('lark-channel-bridge history around --chat oc_chat --message');
+    expect(prompt).toContain('不要回答“完全看不到未 @ 的群消息”');
+    expect(prompt).toContain('可以按需查询当前群开启历史后记录到的未 @ 消息');
   });
 
   it('marks a bot sender via raw sender_type and injects botOpenId and mentions', async () => {
@@ -301,7 +567,13 @@ describe('sender identity in bridge_context', () => {
 });
 
 async function createHarness(access?: {
-  chatPolicies?: Record<string, { requireMention?: boolean }>;
+  chatPolicies?: Record<string, {
+    requireMention?: boolean;
+    responseMode?: 'mention-only' | 'ambient' | 'always';
+    ambientLevel?: 'quiet' | 'balanced' | 'active';
+    history?: { enabled?: boolean; retentionDays?: number; maxMessages?: number };
+  }>;
+  permissions?: Partial<PermissionConfig>;
 }): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
@@ -328,6 +600,7 @@ async function createHarness(access?: {
       admins: ['ou_user'],
       ...(access?.chatPolicies ? { chatPolicies: access.chatPolicies } : {}),
     },
+    ...(access?.permissions ? { permissions: access.permissions } : {}),
   });
   const profileConfig = {
     ...baseProfileConfig,
@@ -362,18 +635,45 @@ async function createHarness(access?: {
 }
 
 async function startTestBridge(h: {
+  tmp: TmpProfile;
   profileConfig: ReturnType<typeof createDefaultProfileConfig>;
   agent: FakeAgentAdapter;
   sessions: SessionStore;
   workspaces: WorkspaceStore;
   controls: ReturnType<typeof createControls>;
-}): Promise<void> {
+}, opts: {
+  ambientDecisionRunner?: (input: {
+    message: {
+      messageId: string;
+      chatId: string;
+      threadId?: string;
+      senderId: string;
+      content: string;
+      createdAt: string;
+    };
+    recentMessages: Array<{
+      messageId: string;
+      chatId: string;
+      threadId?: string;
+      senderId: string;
+      content: string;
+      createdAt: string;
+    }>;
+    level: 'quiet' | 'balanced' | 'active';
+    cwd: string;
+  }) => Promise<AmbientDecision>;
+} = {}): Promise<void> {
   const bridge = await startChannel({
     cfg: h.controls.profileConfig,
     agent: h.agent,
     sessions: h.sessions,
     workspaces: h.workspaces,
     controls: h.controls,
+    appPaths: {
+      mediaDir: join(h.tmp.profile, 'media'),
+      historyDir: join(h.tmp.profile, 'history'),
+    },
+    ambientDecisionRunner: opts.ambientDecisionRunner,
   });
   cleanups.push(() => bridge.disconnect());
 }
@@ -441,6 +741,33 @@ function createControls(profileConfig: ReturnType<typeof createDefaultProfileCon
     configPath,
     cfg: profileConfig,
     processId: 'proc_test',
+  };
+}
+
+function controlledAmbientRun(opts: AgentRunOptions, releases: Array<() => void>): AgentRun {
+  let stopped = false;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+    releases.push(resolve);
+  });
+  const events = async function* (): AsyncIterable<AgentEvent> {
+    await released;
+    if (stopped) return;
+    yield { type: 'text', delta: '{"respond":false,"reason":"skip"}' };
+    yield { type: 'done', terminationReason: 'normal' };
+  };
+
+  return {
+    runId: opts.runId,
+    events: events(),
+    async stop() {
+      stopped = true;
+      release();
+    },
+    async waitForExit() {
+      return true;
+    },
   };
 }
 

@@ -52,7 +52,19 @@ export function accessPolicyDigest(access: ProfileConfig['access']): string {
     chatPolicies: Object.fromEntries(
       Object.entries(access.chatPolicies)
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([chatId, policy]) => [chatId, { requireMention: policy.requireMention ?? null }]),
+        .map(([chatId, policy]) => [
+          chatId,
+          {
+            requireMention: policy.requireMention ?? null,
+            responseMode: policy.responseMode ?? null,
+            ambientLevel: policy.ambientLevel ?? null,
+            history: {
+              enabled: policy.history?.enabled ?? null,
+              retentionDays: policy.history?.retentionDays ?? null,
+              maxMessages: policy.history?.maxMessages ?? null,
+            },
+          },
+        ]),
     ),
     requireMentionInGroup: access.requireMentionInGroup,
   });

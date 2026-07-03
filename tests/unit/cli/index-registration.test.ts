@@ -16,4 +16,13 @@ describe('CLI command registration', () => {
     const appSecretOptions = source.match(/--app-secret <secret>/g) ?? [];
     expect(appSecretOptions.length).toBeGreaterThanOrEqual(3);
   });
+
+  it('registers history inspection commands', async () => {
+    const source = await readFile(join(process.cwd(), 'src', 'cli', 'index.ts'), 'utf8');
+
+    expect(source).toMatch(/\.command\(['"]history['"]\)/);
+    expect(source).toContain('runHistoryTail');
+    expect(source).toContain('runHistorySearch');
+    expect(source).toContain('runHistoryAround');
+  });
 });

@@ -33,6 +33,7 @@ export interface AppPaths {
   hostLogsDir: string;
   /** Machine-wide lock ensuring only one supervisor runs. */
   hostLockFile: string;
+  historyDir: string;
   registryDir: string;
   userRegistryFile: string;
   userLockDir: string;
@@ -71,6 +72,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     hostUiFile: join(rootDir, 'ui.json'),
     hostLogsDir: join(rootDir, 'logs'),
     hostLockFile: join(userLockDir, 'supervisor.lock'),
+    historyDir: join(profileDir, 'history'),
     registryDir,
     userRegistryFile: join(registryDir, 'processes.json'),
     userLockDir,
