@@ -225,7 +225,7 @@ describe('sender identity in bridge_context', () => {
     await h.channel.handlers.message?.(
       message({
         messageId: 'om_ambient_skip',
-        content: '这个 TypeScript 报错怎么修？',
+        content: '这个方案是不是要先拆边界再推进？',
         mentionedBot: false,
       }),
     );
@@ -248,11 +248,59 @@ describe('sender identity in bridge_context', () => {
     await h.channel.handlers.message?.(
       message({
         messageId: 'om_ambient_reply',
+        content: '这个方案是不是要先拆边界再推进？',
+        mentionedBot: false,
+      }),
+    );
+
+    await waitFor(() => h.agent.runOptions.length === 1);
+  });
+
+  it('queues clear technical ambient candidates without starting an AI decision', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { responseMode: 'ambient', ambientLevel: 'balanced' },
+      },
+    });
+    const ambientDecisionRunner = vi.fn(async (): Promise<AmbientDecision> => ({
+      respond: false,
+      reason: 'should-not-run',
+    }));
+    await startTestBridge(h, { ambientDecisionRunner });
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_ambient_rule_accept',
         content: '这个 TypeScript 报错怎么修？',
         mentionedBot: false,
       }),
     );
 
+    await waitFor(() => h.agent.runOptions.length === 1);
+    expect(ambientDecisionRunner).not.toHaveBeenCalled();
+  });
+
+  it('fails open for active ambient timeout on substantial project discussion', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { responseMode: 'ambient', ambientLevel: 'active' },
+      },
+    });
+    const ambientDecisionRunner = vi.fn(async (): Promise<AmbientDecision> => ({
+      respond: false,
+      reason: 'timeout:active:60000ms',
+    }));
+    await startTestBridge(h, { ambientDecisionRunner });
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_ambient_timeout_fail_open',
+        content: '我倾向先把上下文记录下来，再安排后续整理',
+        mentionedBot: false,
+      }),
+    );
+
+    await waitFor(() => ambientDecisionRunner.mock.calls.length === 1);
     await waitFor(() => h.agent.runOptions.length === 1);
   });
 
@@ -278,7 +326,7 @@ describe('sender identity in bridge_context', () => {
     await h.channel.handlers.message?.(
       message({
         messageId: 'om_ambient_policy',
-        content: '这个 TypeScript 报错怎么修？',
+        content: '这个方案是不是要先拆边界再推进？',
         mentionedBot: false,
       }),
     );
@@ -312,7 +360,7 @@ describe('sender identity in bridge_context', () => {
     const pending = [1, 2].map((index) => h.channel.handlers.message?.(
       message({
         messageId: `om_default_ambient_concurrent_${index}`,
-        content: `这个 TypeScript 报错怎么修？ ${index}`,
+        content: `这个方案是不是要先拆边界再推进？ ${index}`,
         mentionedBot: false,
       }),
     ) as Promise<void>);
@@ -347,7 +395,7 @@ describe('sender identity in bridge_context', () => {
     const pending = [1, 2, 3].map((index) => h.channel.handlers.message?.(
       message({
         messageId: `om_ambient_limit_${index}`,
-        content: `这个 TypeScript 报错怎么修？ ${index}`,
+        content: `这个方案是不是要先拆边界再推进？ ${index}`,
         mentionedBot: false,
       }),
     ) as Promise<void>);

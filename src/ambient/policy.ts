@@ -7,7 +7,9 @@ export interface AmbientPrefilterMessage {
 
 export interface AmbientPrefilterResult {
   pass: boolean;
+  action: 'accept' | 'reject' | 'decide';
   reason: string;
+  failOpenOnTimeout?: boolean;
 }
 
 const SHORT_ACK = new Set([
@@ -46,6 +48,15 @@ const TECHNICAL_HINTS = [
   '测试',
   '脚本',
   '配置',
+  '部署',
+  '发布',
+  '验证',
+  '超时',
+  'timeout',
+  'stream',
+  'cardkit',
+  'feishu',
+  'lark',
 ];
 
 const ASSISTANT_HINTS = [
@@ -59,6 +70,34 @@ const ASSISTANT_HINTS = [
   '分析',
   '看看',
   '怎么做',
+  '怎么修',
+  '帮我',
+  '帮看',
+];
+
+const PROJECT_DISCUSSION_HINTS = [
+  '方案',
+  '风险',
+  '下一步',
+  '后续',
+  '推进',
+  '边界',
+  '流程',
+  '交付',
+  '上线',
+  '排期',
+  '整理',
+  '上下文',
+];
+
+const SMALLTALK_HINTS = [
+  '吃什么',
+  '喝什么',
+  '晚饭',
+  '午饭',
+  '夜宵',
+  '周末',
+  '哈哈',
 ];
 
 export function shouldBypassAmbientDecision(message: AmbientPrefilterMessage): boolean {
@@ -74,26 +113,54 @@ export function ambientPrefilter(
   level: AmbientLevel,
 ): AmbientPrefilterResult {
   const content = normalizeContent(message.content);
-  if (!content) return { pass: false, reason: 'empty' };
-  if (isNoise(content)) return { pass: false, reason: 'noise' };
-  if (isShortAcknowledgement(content)) return { pass: false, reason: 'ack' };
+  if (!content) return reject('empty');
+  if (isNoise(content)) return reject('noise');
+  if (isShortAcknowledgement(content)) return reject('ack');
+  if (containsAny(content, SMALLTALK_HINTS)) return reject('smalltalk');
 
   const question = looksLikeQuestion(content);
   const technical = containsAny(content, TECHNICAL_HINTS);
   const assistant = containsAny(content, ASSISTANT_HINTS);
+  const projectDiscussion = containsAny(content, PROJECT_DISCUSSION_HINTS);
 
   if (level === 'quiet') {
-    if ((question && technical) || assistant) return { pass: true, reason: 'direct-help' };
-    return { pass: false, reason: 'quiet-filter' };
+    if (question && technical) return accept('technical-help');
+    if (assistant) return accept('assistant-request');
+    return reject('quiet-filter');
   }
+
+  if (technical) return accept('technical-help');
+  if (assistant) return accept('assistant-request');
 
   if (level === 'active') {
-    if (content.length >= 8) return { pass: true, reason: 'substantial' };
-    return { pass: false, reason: 'too-short' };
+    if (projectDiscussion || content.length >= 16) {
+      return decide('active-substantial', { failOpenOnTimeout: true });
+    }
+    return reject('too-short');
   }
 
-  if (question || technical || assistant) return { pass: true, reason: 'balanced-candidate' };
-  return { pass: false, reason: 'balanced-filter' };
+  if (question) return decide('balanced-candidate');
+  return reject('balanced-filter');
+}
+
+function accept(reason: string): AmbientPrefilterResult {
+  return { pass: true, action: 'accept', reason };
+}
+
+function reject(reason: string): AmbientPrefilterResult {
+  return { pass: false, action: 'reject', reason };
+}
+
+function decide(
+  reason: string,
+  options: Pick<AmbientPrefilterResult, 'failOpenOnTimeout'> = {},
+): AmbientPrefilterResult {
+  return {
+    pass: true,
+    action: 'decide',
+    reason,
+    ...(options.failOpenOnTimeout ? { failOpenOnTimeout: true } : {}),
+  };
 }
 
 function normalizeContent(content: string): string {

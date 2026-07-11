@@ -35,9 +35,9 @@ const evalCases: EvalCase[] = [
     expected: { quiet: false, balanced: false, active: true },
   },
   {
-    name: 'casual short question stays below balanced',
+    name: 'casual short question stays silent at every level',
     content: '今晚大家准备一起吃什么？',
-    expected: { quiet: false, balanced: true, active: true },
+    expected: { quiet: false, balanced: false, active: false },
   },
 ];
 

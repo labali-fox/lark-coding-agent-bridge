@@ -740,7 +740,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     }
     if (responseMode.mode === 'ambient' && !isSlashCommand(msg.content)) {
       const prefilter = ambientPrefilter(msg, responseMode.ambientLevel);
-      if (!prefilter.pass) {
+      if (prefilter.action === 'reject') {
         log.info('intake', 'skip-ambient-prefilter', {
           scope,
           chatType: msg.chatType,
@@ -748,27 +748,48 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
         });
         return;
       }
-      const decision = await ambientDecisionRunner({
-        scope,
-        access: accessDecision,
-        message: ambientMessage,
-        recentMessages: recentBefore,
-        level: responseMode.ambientLevel,
-        cwd: ambientDecisionCwd(controls),
-      });
-      if (!decision.respond) {
-        log.info('intake', 'skip-ambient-decision', {
+      if (prefilter.action === 'accept') {
+        log.info('intake', 'ambient-decision-accepted', {
           scope,
           chatType: msg.chatType,
-          reason: decision.reason,
+          reason: `rule:${prefilter.reason}`,
         });
-        return;
+      } else {
+        const decision = await ambientDecisionRunner({
+          scope,
+          access: accessDecision,
+          message: ambientMessage,
+          recentMessages: recentBefore,
+          level: responseMode.ambientLevel,
+          cwd: ambientDecisionCwd(controls),
+        });
+        if (!decision.respond) {
+          if (
+            responseMode.ambientLevel === 'active' &&
+            prefilter.failOpenOnTimeout === true &&
+            isAmbientDecisionTimeout(decision.reason)
+          ) {
+            log.info('intake', 'ambient-decision-accepted', {
+              scope,
+              chatType: msg.chatType,
+              reason: `timeout-fail-open:${prefilter.reason}:${decision.reason}`,
+            });
+          } else {
+            log.info('intake', 'skip-ambient-decision', {
+              scope,
+              chatType: msg.chatType,
+              reason: decision.reason,
+            });
+            return;
+          }
+        } else {
+          log.info('intake', 'ambient-decision-accepted', {
+            scope,
+            chatType: msg.chatType,
+            reason: decision.reason,
+          });
+        }
       }
-      log.info('intake', 'ambient-decision-accepted', {
-        scope,
-        chatType: msg.chatType,
-        reason: decision.reason,
-      });
     }
   }
 
@@ -843,6 +864,10 @@ function rememberAmbientMessage(
 
 function ambientDecisionCwd(controls: Controls): string {
   return controls.profileConfig.workspaces.default ?? process.cwd();
+}
+
+function isAmbientDecisionTimeout(reason: string): boolean {
+  return reason.startsWith('timeout:');
 }
 
 async function startAmbientDecisionRun(input: {
