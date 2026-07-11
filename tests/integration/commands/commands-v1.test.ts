@@ -12,6 +12,18 @@ import { createFakeAgent } from '../../helpers/fake-agent.js';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
+const sdkMock = vi.hoisted(() => ({
+  requestScopeGrantLink: vi.fn(async () => ({
+    url: 'https://auth.test/grant-group-msg',
+    expireIn: 600,
+    completion: new Promise<void>(() => {}),
+  })),
+}));
+
+vi.mock('../../../src/bot/wizard.js', () => ({
+  requestScopeGrantLink: sdkMock.requestScopeGrantLink,
+}));
+
 interface RunOverrides {
   scope?: string;
   senderId?: string;
@@ -417,6 +429,32 @@ describe('Bridge command contracts', () => {
     expect(lastMarkdown(h.channel)).toContain('已关闭当前群的不 @ 看情况回复');
   });
 
+  it('warns immediately when ambient group policy is enabled without group-message scope', async () => {
+    const h = await createHarness();
+    setGrantedScopes(h.channel, []);
+
+    await expect(
+      h.run('/invite group ambient active', {
+        chatId: 'oc-ambient-missing-scope',
+        scope: 'oc-ambient-missing-scope',
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toContain('oc-ambient-missing-scope');
+    expect(root?.profiles.claude?.access.chatPolicies['oc-ambient-missing-scope']).toMatchObject({
+      responseMode: 'ambient',
+      ambientLevel: 'active',
+    });
+    expect(sdkMock.requestScopeGrantLink).toHaveBeenCalledWith({
+      appId: 'app-id',
+      tenantScopes: ['im:message.group_msg'],
+    });
+    expect(lastMarkdown(h.channel)).toContain('授权前，飞书不会把非 @ 群消息推给 bot');
+    expect(JSON.stringify(h.channel.sent)).toContain('接收群里非 @ 消息还差一个权限');
+  });
+
   it('manages current-group history policy independently from response mode', async () => {
     const h = await createHarness();
 
@@ -708,6 +746,30 @@ function mention(openId: string, name: string): NonNullable<NormalizedMessage['m
     name,
     isBot: false,
   } as NonNullable<NormalizedMessage['mentions']>[number];
+}
+
+function setGrantedScopes(channel: FakeChannel, scopes: string[]): void {
+  (channel.rawClient as unknown as {
+    application: {
+      v6: {
+        application: {
+          get: ReturnType<typeof vi.fn>;
+        };
+      };
+    };
+  }).application = {
+    v6: {
+      application: {
+        get: vi.fn(async () => ({
+          data: {
+            app: {
+              scopes: scopes.map((scope) => ({ scope })),
+            },
+          },
+        })),
+      },
+    },
+  };
 }
 
 function lastContent(channel: FakeChannel): Record<string, unknown> {

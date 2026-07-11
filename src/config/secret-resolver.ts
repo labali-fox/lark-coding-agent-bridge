@@ -129,10 +129,10 @@ async function resolveExecRef(
     // Short-circuit: read keystore directly. The expected id under the
     // bridge convention is `app-<appId>`; if the user wired something
     // else, fall back to ref.id verbatim.
-    const candidate = await getSecret(ref.id, secretPaths);
+    const candidate = await getBridgeKeystoreSecret(ref.id, appId, secretPaths);
     if (candidate !== undefined) return candidate;
     const conventional = secretKeyForApp(appId);
-    const fallback = await getSecret(conventional, secretPaths);
+    const fallback = await getBridgeKeystoreSecret(conventional, appId, secretPaths);
     if (fallback !== undefined) return fallback;
     throw new Error(`keystore has no entry for "${ref.id}" or "${conventional}"`);
   }
@@ -155,6 +155,23 @@ function isSelfBridgeCommand(command: string, args: string[] | undefined): boole
     if (a === 'secrets' && b === 'get') return true;
   }
   return false;
+}
+
+async function getBridgeKeystoreSecret(
+  id: string,
+  appId: string,
+  secretPaths: KeystorePaths,
+): Promise<string | undefined> {
+  try {
+    return await getSecret(id, secretPaths);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `App Secret for ${appId} could not be decrypted from the bridge keystore. ` +
+        `Re-enter it with: lark-channel-bridge secrets set --profile <profile> --app-id ${appId}. ` +
+        `Original error: ${message}`,
+    );
+  }
 }
 
 async function spawnExecProvider(pc: ProviderConfig, ref: SecretRef): Promise<string> {

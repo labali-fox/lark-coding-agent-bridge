@@ -427,6 +427,31 @@ describe('markdown stream startup failures', () => {
     expect(finalJson).not.toContain('progress update');
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_card_final' });
   });
+
+  it('disables markdown streaming after CardKit rejects the stream card id', async () => {
+    const stream = vi
+      .fn<StreamFn>()
+      .mockRejectedValueOnce(new Error('Failed to create card content, ext=ErrCode: 11310; ErrMsg: cardid is invalid; '));
+    const h = await createHarness({
+      stream,
+      events: [
+        [{ type: 'text', delta: 'ok first' }, { type: 'done', terminationReason: 'normal' }],
+        [{ type: 'text', delta: 'ok second' }, { type: 'done', terminationReason: 'normal' }],
+      ],
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_first', 'first'));
+    await waitFor(() => h.agent.runOptions.length === 1);
+    await waitFor(() => h.channel.sent.length === 1);
+
+    await h.channel.handlers.message?.(message('om_second', 'second'));
+    await waitFor(() => h.agent.runOptions.length === 2);
+    await waitFor(() => h.channel.sent.length === 2);
+
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(lastMarkdown(h.channel)).toContain('ok second');
+  });
 });
 
 async function createHarness(options: {
@@ -487,6 +512,7 @@ async function createHarness(options: {
         },
       ],
       [{ type: 'done', terminationReason: 'normal' }],
+      [{ type: 'text', delta: 'ok second' }, { type: 'done', terminationReason: 'normal' }],
     ],
   });
   const channel = createFakeLarkChannel(options);
