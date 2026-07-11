@@ -66,13 +66,13 @@ describeReal('real Feishu/Lark ambient group flow', () => {
         },
         {
           id: 'active-discussion',
-          text: `BRIDGE_REAL_EVAL_ACTIVE_${Date.now()} 我觉得这个方案可能有风险：先记录群消息再判断是否回复，可能漏掉上下文；需要有人帮忙梳理下一步`,
+          text: `BRIDGE_REAL_EVAL_ACTIVE_${Date.now()} 我觉得这个方案有风险：先记录群消息再判断是否回复，可能漏掉上下文，下一步需要先梳理触发条件`,
           expectedEvent: 'ambient-decision-accepted',
         },
         {
           id: 'smalltalk',
           text: `BRIDGE_REAL_EVAL_SMALLTALK_${Date.now()} 今晚大家准备一起吃什么，要不要晚点再决定`,
-          expectedEvent: 'skip-ambient-decision',
+          expectedEvent: 'skip-ambient-prefilter',
         },
       ];
 
