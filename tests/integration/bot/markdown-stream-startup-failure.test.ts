@@ -2,6 +2,7 @@ import type { NormalizedMessage } from '@larksuite/channel';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AgentEvent } from '../../../src/agent/types.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { log } from '../../../src/core/logger.js';
 import { SessionStore } from '../../../src/session/store.js';
@@ -156,11 +157,37 @@ describe('markdown stream startup failures', () => {
       ),
     );
   }, 10_000);
+
+  it('disables markdown streaming after CardKit rejects the stream card id', async () => {
+    const stream = vi
+      .fn<StreamFn>()
+      .mockRejectedValueOnce(new Error('Failed to create card content, ext=ErrCode: 11310; ErrMsg: cardid is invalid; '));
+    const h = await createHarness({
+      stream,
+      events: [
+        [{ type: 'text', delta: 'ok first' }, { type: 'done', terminationReason: 'normal' }],
+        [{ type: 'text', delta: 'ok second' }, { type: 'done', terminationReason: 'normal' }],
+      ],
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_first', 'first'));
+    await waitFor(() => h.agent.runOptions.length === 1);
+    await waitFor(() => h.channel.sent.length === 1);
+
+    await h.channel.handlers.message?.(message('om_second', 'second'));
+    await waitFor(() => h.agent.runOptions.length === 2);
+    await waitFor(() => h.channel.sent.length === 2);
+
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(lastMarkdown(h.channel)).toContain('ok second');
+  });
 });
 
 async function createHarness(options: {
   reactionCreate?: () => Promise<{ data: { reaction_id: string } }>;
   stream?: StreamFn;
+  events?: readonly (readonly AgentEvent[])[];
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel;
@@ -200,7 +227,7 @@ async function createHarness(options: {
   const agent = new FakeAgentAdapter({
     id: 'codex',
     displayName: 'Codex',
-    events: [
+    events: options.events ?? [
       [
         {
           type: 'error',
@@ -209,6 +236,7 @@ async function createHarness(options: {
         },
       ],
       [{ type: 'done', terminationReason: 'normal' }],
+      [{ type: 'text', delta: 'ok second' }, { type: 'done', terminationReason: 'normal' }],
     ],
   });
   const channel = createFakeLarkChannel(options);

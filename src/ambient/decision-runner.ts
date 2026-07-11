@@ -31,7 +31,16 @@ export interface AmbientDecisionRun {
   stop(): Promise<void>;
 }
 
-const DEFAULT_TIMEOUT_MS = 8_000;
+export const AMBIENT_DECISION_TIMEOUT_MS: Record<AmbientLevel, number> = {
+  quiet: 30_000,
+  balanced: 45_000,
+  active: 60_000,
+};
+export const DEFAULT_AMBIENT_DECISION_TIMEOUT_MS = AMBIENT_DECISION_TIMEOUT_MS.balanced;
+
+export function ambientDecisionTimeoutMs(level: AmbientLevel): number {
+  return AMBIENT_DECISION_TIMEOUT_MS[level];
+}
 
 export async function runAmbientDecision(input: RunAmbientDecisionInput): Promise<AmbientDecision> {
   let run: AmbientDecisionRun;
@@ -57,11 +66,12 @@ export async function runAmbientDecision(input: RunAmbientDecisionInput): Promis
   }));
 
   let timer: NodeJS.Timeout | undefined;
+  const decisionTimeoutMs = input.timeoutMs ?? ambientDecisionTimeoutMs(input.level);
   const timeout = new Promise<AmbientDecision>((resolve) => {
     timer = setTimeout(() => {
       void Promise.resolve(run.stop()).catch(() => {});
-      resolve({ respond: false, reason: 'timeout' });
-    }, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+      resolve({ respond: false, reason: `timeout:${input.level}:${decisionTimeoutMs}ms` });
+    }, decisionTimeoutMs);
   });
 
   try {
@@ -79,6 +89,11 @@ export function buildAmbientDecisionPrompt(input: AmbientDecisionPromptInput): s
     'Return JSON only. The JSON schema is {"respond": boolean, "reason": string}.',
     'respond=true only when the bot can add useful, timely value without being directly mentioned.',
     'respond=false for small talk, acknowledgements, jokes, private human discussion, or uncertainty.',
+    '',
+    'Decision strength by ambientLevel:',
+    '- quiet: respond=true only for explicit help requests, technical questions, or direct requests for the bot/AI/agent to summarize, analyze, inspect, or help.',
+    '- balanced: respond=true for questions, technical/project context, or discussion where the bot can clearly unblock the next step; skip ordinary planning and low-value chatter.',
+    '- active: lean toward respond=true for substantial technical, product, project, or planning discussion when the bot can add a concise next step, risk callout, summary, or useful suggestion. Still respond=false for small talk, acknowledgements, jokes, private human discussion, pure status updates, or uncertainty.',
     '',
     JSON.stringify({
       ambientLevel: input.level,

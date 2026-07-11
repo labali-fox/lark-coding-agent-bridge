@@ -691,7 +691,12 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
         v6: {
           application: {
             get: vi.fn(async () => ({
-              data: { app: { owner: { owner_id: 'ou_owner' } } },
+              data: {
+                app: {
+                  owner: { owner_id: 'ou_owner' },
+                  scopes: [{ scope: 'im:message.group_msg' }],
+                },
+              },
             })),
           },
         },

@@ -1684,19 +1684,26 @@ async function handleInvite(args: string, ctx: CommandContext): Promise<void> {
       };
     });
     if (modifier.kind === 'no-at') {
-      void promptGroupMsgScopeIfMissing(ctx).catch((err) =>
-        log.warn('command', 'group-msg-scope-check-failed', { err: String(err) }),
+      const scopeStatus = await promptGroupMsgScopeIfMissing(ctx).catch((err) => {
+        log.warn('command', 'group-msg-scope-check-failed', { err: String(err) });
+        return 'unknown' as const;
+      });
+      await reply(
+        ctx,
+        `✅ 当前群（\`${chatId}\`）已加入响应群名单，并可不 @ 直接发消息。` +
+          groupResponseScopeNote(scopeStatus),
       );
-      await reply(ctx, `✅ 当前群（\`${chatId}\`）已加入响应群名单，并可不 @ 直接发消息。`);
       return;
     }
     if (modifier.kind === 'ambient') {
-      void promptGroupMsgScopeIfMissing(ctx).catch((err) =>
-        log.warn('command', 'group-msg-scope-check-failed', { err: String(err) }),
-      );
+      const scopeStatus = await promptGroupMsgScopeIfMissing(ctx).catch((err) => {
+        log.warn('command', 'group-msg-scope-check-failed', { err: String(err) });
+        return 'unknown' as const;
+      });
       await reply(
         ctx,
-        `✅ 当前群（\`${chatId}\`）已加入响应群名单，并开启不 @ 看情况回复（${modifier.level}）。`,
+        `✅ 当前群（\`${chatId}\`）已加入响应群名单，并开启不 @ 看情况回复（${modifier.level}）。` +
+          groupResponseScopeNote(scopeStatus),
       );
       return;
     }
@@ -2329,6 +2336,19 @@ function groupHistoryScopeNote(status: GroupMsgScopeStatus): string {
     return '\n\n⚠️ 当前应用还缺少 `im:message.group_msg` 权限，但补授权卡发送失败。授权前，非 @ 群消息不会进入历史；请检查应用权限后 `/reconnect`。';
   }
   return '\n\n提示：历史只记录 bridge 收到的新消息。若 status 一直是 0，请确认飞书应用已授权 `im:message.group_msg`，然后发 `/reconnect`。';
+}
+
+function groupResponseScopeNote(status: GroupMsgScopeStatus): string {
+  if (status === 'present') {
+    return '\n\n已确认应用具备 `im:message.group_msg` 权限；新的非 @ 群消息在 bridge 收到后可触发当前模式。';
+  }
+  if (status === 'missing-card-sent') {
+    return '\n\n⚠️ 当前应用还缺少 `im:message.group_msg` 权限；已发送补授权卡。授权前，飞书不会把非 @ 群消息推给 bot，所以这个模式暂时不会被触发。';
+  }
+  if (status === 'missing-card-failed') {
+    return '\n\n⚠️ 当前应用还缺少 `im:message.group_msg` 权限，但补授权卡发送失败。授权前，飞书不会把非 @ 群消息推给 bot，所以这个模式暂时不会被触发。请检查应用权限后 `/reconnect`。';
+  }
+  return '';
 }
 
 function configFailureMessage(step: string, rollbackFailed: boolean, larkCliPolicyApplied: boolean): string {

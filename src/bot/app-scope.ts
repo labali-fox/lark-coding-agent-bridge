@@ -23,7 +23,10 @@ export async function fetchGrantedScopes(
   appId: string,
 ): Promise<Set<string> | null> {
   try {
-    const res = await channel.rawClient.application.application.get({
+    const api = channel.rawClient.application as unknown as RawApplicationApi | undefined;
+    const getApplication = api?.v6?.application?.get ?? api?.application?.get;
+    if (!getApplication) throw new Error('application.get API is unavailable');
+    const res = await getApplication({
       params: { lang: 'zh_cn', user_id_type: 'open_id' },
       path: { app_id: appId },
     });
@@ -36,6 +39,16 @@ export async function fetchGrantedScopes(
     return null;
   }
 }
+
+interface RawApplicationApi {
+  v6?: { application?: { get?: ApplicationGet } };
+  application?: { get?: ApplicationGet };
+}
+
+type ApplicationGet = (input: {
+  params: { lang: string; user_id_type: string };
+  path: { app_id: string };
+}) => Promise<{ data?: { app?: { scopes?: Array<{ scope: string }> } } }>;
 
 /**
  * Whether the app has the group-message scope.

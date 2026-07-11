@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  AMBIENT_DECISION_TIMEOUT_MS,
+  DEFAULT_AMBIENT_DECISION_TIMEOUT_MS,
+  ambientDecisionTimeoutMs,
   buildAmbientDecisionPrompt,
   runAmbientDecision,
   type AmbientDecisionMessage,
@@ -47,8 +50,42 @@ describe('ambient decision runner', () => {
       recentMessages: [],
       level: 'balanced',
       timeoutMs: 5,
-    })).resolves.toMatchObject({ respond: false, reason: 'timeout' });
+    })).resolves.toMatchObject({ respond: false, reason: 'timeout:balanced:5ms' });
     expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('uses level-specific production defaults long enough for real agent startup latency', async () => {
+    expect(AMBIENT_DECISION_TIMEOUT_MS).toEqual({
+      quiet: 30_000,
+      balanced: 45_000,
+      active: 60_000,
+    });
+    expect(DEFAULT_AMBIENT_DECISION_TIMEOUT_MS).toBe(45_000);
+    expect(ambientDecisionTimeoutMs('quiet')).toBe(30_000);
+    expect(ambientDecisionTimeoutMs('balanced')).toBe(45_000);
+    expect(ambientDecisionTimeoutMs('active')).toBe(60_000);
+  });
+
+  it('applies the active-mode default timeout when no explicit timeout is provided', async () => {
+    vi.useFakeTimers();
+    try {
+      const stop = vi.fn();
+      const decision = runAmbientDecision({
+        startRun: () => fakeRun(hangingEvents(), stop),
+        message: message({ content: '这个 TypeScript 报错怎么修？' }),
+        recentMessages: [],
+        level: 'active',
+      });
+
+      await vi.advanceTimersByTimeAsync(AMBIENT_DECISION_TIMEOUT_MS.active - 1);
+      expect(stop).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(decision).resolves.toMatchObject({ respond: false, reason: 'timeout:active:60000ms' });
+      expect(stop).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('builds a prompt with current and recent messages', () => {
@@ -64,6 +101,21 @@ describe('ambient decision runner', () => {
     expect(prompt).toContain('现在要不要回复');
     expect(prompt).toContain('前面上下文');
     expect(prompt).toContain('"respond"');
+  });
+
+  it('builds a prompt that defines quiet, balanced, and active decision strength', () => {
+    const prompt = buildAmbientDecisionPrompt({
+      message: message({ content: '我觉得这里可以先记录群消息，然后再判断是否回复' }),
+      recentMessages: [],
+      level: 'active',
+    });
+
+    expect(prompt).toContain('quiet');
+    expect(prompt).toContain('balanced');
+    expect(prompt).toContain('active');
+    expect(prompt).toContain('active: lean toward respond=true');
+    expect(prompt).toContain('substantial technical, product, project, or planning discussion');
+    expect(prompt).toContain('small talk, acknowledgements, jokes, private human discussion');
   });
 });
 

@@ -303,6 +303,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     ? new ChatHistoryStore(deps.appPaths.historyDir)
     : undefined;
   const ambientRecent = new Map<string, AmbientDecisionMessage[]>();
+  const markdownStreamingState: MarkdownStreamingState = {};
   const ambientDecisionPool = new ProcessPool(() => Math.min(2, getMaxConcurrentRuns(controls.cfg)));
   const rawAmbientDecisionRunner: AmbientDecisionRunner =
     deps.ambientDecisionRunner ??
@@ -370,6 +371,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           callbackAuth,
           activePolicyFingerprints,
           lastRunModelByScope,
+          markdownStreamingState,
           scope,
           mode,
         });
@@ -917,8 +919,13 @@ interface RunBatchDeps {
   callbackAuth?: CallbackAuth;
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
+  markdownStreamingState: MarkdownStreamingState;
   scope: string;
   mode: ChatMode;
+}
+
+interface MarkdownStreamingState {
+  disabledReason?: string;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -935,6 +942,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     callbackAuth,
     activePolicyFingerprints,
     lastRunModelByScope,
+    markdownStreamingState,
     scope,
     mode,
   } = deps;
@@ -1236,6 +1244,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           replyMode,
           sendOpts,
           cardRenderOptions,
+          markdownStreamingState,
         });
         return;
       }
@@ -1276,7 +1285,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         },
         sendOpts,
       );
-      await awaitRenderAwareStream({
+      const delivery = await awaitRenderAwareStream({
         mode: replyMode,
         streamDone,
         renderDone,
@@ -1287,9 +1296,38 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             { card: renderCard(filterForPrefs(state), cardRenderOptions) },
             sendOpts,
           );
+          return true;
         },
       });
+      if (delivery !== 'none') {
+        log.info('outbound', 'sent', outboundLogFields(
+          { scope, replyMode, sendOpts },
+          `card-${delivery}`,
+          renderText(filterForPrefs(latestState)),
+        ));
+      }
     } else if (replyMode === 'markdown') {
+      if (markdownStreamingState.disabledReason) {
+        const finalState = await processAgentStream(
+          handle,
+          eventStream,
+          scope,
+          idleTimeoutMs,
+          recordSession,
+          async () => {},
+        );
+        await sendFinalReply({
+          channel,
+          chatId,
+          scope,
+          state: filterForPrefs(finalState),
+          replyMode,
+          sendOpts,
+          cardRenderOptions,
+          markdownStreamingState,
+        });
+        return;
+      }
       let latestState: RunState = initialState;
       let producerStarted = false;
       let markdownCtrl: { setContent(markdown: string): Promise<void> } | undefined;
@@ -1318,7 +1356,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         },
         sendOpts,
       );
-      await awaitRenderAwareStream({
+      const delivery = await awaitRenderAwareStream({
         mode: replyMode,
         streamDone,
         renderDone,
@@ -1327,9 +1365,19 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           const body = renderText(filterForPrefs(state));
           if (body.trim()) {
             await channel.send(chatId, { markdown: body }, sendOpts);
+            return true;
           }
+          return false;
         },
+        onStreamError: (err) => disableMarkdownStreamingIfUnsupported(markdownStreamingState, err),
       });
+      if (delivery !== 'none') {
+        log.info('outbound', 'sent', outboundLogFields(
+          { scope, replyMode, sendOpts },
+          `markdown-${delivery}`,
+          renderText(filterForPrefs(latestState)),
+        ));
+      }
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
@@ -1350,6 +1398,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         replyMode,
         sendOpts,
         cardRenderOptions,
+        markdownStreamingState,
       });
     }
   } catch (err) {
@@ -1368,6 +1417,7 @@ async function sendFinalReply(input: {
   replyMode: ReturnType<typeof getMessageReplyMode>;
   sendOpts: { replyTo: string; replyInThread?: boolean };
   cardRenderOptions: { signCallback?: (action: string) => string };
+  markdownStreamingState: MarkdownStreamingState;
 }): Promise<void> {
   const body = renderText(input.state);
 
@@ -1380,6 +1430,15 @@ async function sendFinalReply(input: {
     log.info('outbound', 'sent', outboundLogFields(input, 'card', body, result));
   } else if (input.replyMode === 'markdown') {
     if (body.trim()) {
+      if (input.markdownStreamingState.disabledReason) {
+        const result = await input.channel.send(
+          input.chatId,
+          { markdown: body },
+          input.sendOpts,
+        );
+        log.info('outbound', 'sent', outboundLogFields(input, 'markdown', body, result));
+        return;
+      }
       try {
         await input.channel.stream(
           input.chatId,
@@ -1392,6 +1451,7 @@ async function sendFinalReply(input: {
         );
         log.info('outbound', 'sent', outboundLogFields(input, 'markdown-stream', body));
       } catch (err) {
+        disableMarkdownStreamingIfUnsupported(input.markdownStreamingState, err);
         log.warn('outbound', 'markdown-stream-fallback', {
           err: err instanceof Error ? err.message : String(err),
         });
@@ -1590,8 +1650,9 @@ async function awaitRenderAwareStream(input: {
   streamDone: Promise<unknown>;
   renderDone: Promise<RunState>;
   producerStarted: () => boolean;
-  fallback: (state: RunState) => Promise<void>;
-}): Promise<void> {
+  fallback: (state: RunState) => Promise<boolean>;
+  onStreamError?: (err: unknown) => void;
+}): Promise<'stream' | 'fallback' | 'none'> {
   const streamResult = input.streamDone.then(
     () => ({ kind: 'stream' as const, ok: true as const }),
     (err) => ({ kind: 'stream' as const, ok: false as const, err }),
@@ -1603,11 +1664,11 @@ async function awaitRenderAwareStream(input: {
   const first = await Promise.race([streamResult, renderResult]);
   if (!first.ok) {
     if (first.kind === 'stream') {
+      input.onStreamError?.(first.err);
       log.fail('stream', first.err, { mode: input.mode, step: 'stream' });
       const rendered = await renderResult;
       if (!rendered.ok) throw rendered.err;
-      await runFallbackReply(input.mode, rendered.state, input.fallback);
-      return;
+      return (await runFallbackReply(input.mode, rendered.state, input.fallback)) ? 'fallback' : 'none';
     }
     throw first.err;
   }
@@ -1615,13 +1676,12 @@ async function awaitRenderAwareStream(input: {
   if (first.kind === 'stream') {
     const rendered = await renderResult;
     if (!rendered.ok) throw rendered.err;
-    return;
+    return 'stream';
   }
 
   if (!input.producerStarted()) {
     log.warn('stream', 'producer-not-started-before-agent-terminal', { mode: input.mode });
-    await runFallbackReply(input.mode, first.state, input.fallback);
-    return;
+    return (await runFallbackReply(input.mode, first.state, input.fallback)) ? 'fallback' : 'none';
   }
 
   const terminal = await Promise.race([
@@ -1638,20 +1698,40 @@ async function awaitRenderAwareStream(input: {
         log.fail('stream', result.err, { mode: input.mode, step: 'stream-terminal-late' });
       }
     });
-    return;
+    return 'stream';
   }
-  if (!terminal.ok) throw terminal.err;
+  if (!terminal.ok) {
+    input.onStreamError?.(terminal.err);
+    throw terminal.err;
+  }
+  return 'stream';
+}
+
+function disableMarkdownStreamingIfUnsupported(state: MarkdownStreamingState, err: unknown): void {
+  if (state.disabledReason || !isMarkdownStreamingUnsupportedError(err)) return;
+  state.disabledReason = errorMessage(err);
+  log.warn('outbound', 'markdown-stream-disabled', { err: state.disabledReason });
+}
+
+function isMarkdownStreamingUnsupportedError(err: unknown): boolean {
+  const message = errorMessage(err);
+  return /cardid is invalid/i.test(message) || /ErrCode:\s*11310/i.test(message);
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 async function runFallbackReply(
   mode: 'card' | 'markdown',
   state: RunState,
-  fallback: (state: RunState) => Promise<void>,
-): Promise<void> {
+  fallback: (state: RunState) => Promise<boolean>,
+): Promise<boolean> {
   try {
-    await fallback(state);
+    return await fallback(state);
   } catch (err) {
     log.fail('stream', err, { mode, step: 'fallback' });
+    return false;
   }
 }
 

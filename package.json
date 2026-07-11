@@ -42,6 +42,8 @@
     "test:unit": "vitest run tests/unit --passWithNoTests",
     "test:integration": "vitest run tests/integration --passWithNoTests",
     "test:process": "vitest run tests/process --passWithNoTests",
+    "test:real": "vitest run tests/real --passWithNoTests",
+    "test:dev-features": "vitest run tests/unit/ambient/policy-eval.test.ts tests/unit/ambient/decision-runner.test.ts tests/unit/bot/app-scope.test.ts tests/unit/config/secret-resolver.test.ts tests/process/install-current-script.test.ts tests/integration/smoke/ambient-history-smoke.test.ts tests/integration/commands/commands-v1.test.ts tests/integration/bot/bot-at-bot-context.test.ts tests/integration/bot/markdown-stream-startup-failure.test.ts tests/real/ambient-history-real.test.ts --passWithNoTests",
     "ci:local": "git diff --check && pnpm test && pnpm typecheck && pnpm build",
     "ci:platform": "pnpm test && pnpm typecheck && pnpm build",
     "prepare": "npm run build",
