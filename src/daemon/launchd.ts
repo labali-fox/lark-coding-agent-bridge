@@ -29,6 +29,8 @@ export interface PlistInputs {
   runArgs: string[];
   /** Root directory for config/profile state. */
   channelHome: string;
+  /** Clear proxy variables inside the managed bridge runtime. */
+  noProxy?: boolean;
 }
 
 export function buildPlist(inputs: PlistInputs): string {
@@ -65,6 +67,7 @@ ${argStrings}
         <string>${escape(inputs.envPath)}</string>
         <key>LARK_CHANNEL_HOME</key>
         <string>${escape(inputs.channelHome)}</string>
+${inputs.noProxy === true ? '        <key>LARK_CHANNEL_NO_PROXY</key>\n        <string>1</string>\n' : ''}
     </dict>
 </dict>
 </plist>
@@ -83,11 +86,16 @@ export async function writePlist(profile: string, runArgs: string[] = ['run']): 
     profile,
     runArgs,
     channelHome: paths.rootDir,
+    noProxy: envFlag(process.env.LARK_CHANNEL_NO_PROXY),
   });
   const plistPath = launchAgentPlistPath(profile);
   await mkdir(dirname(plistPath), { recursive: true });
   await mkdir(daemonLogDir(profile), { recursive: true });
   await writeFile(plistPath, content, 'utf8');
+}
+
+function envFlag(value: string | undefined): boolean {
+  return Boolean(value && value !== '0' && value !== 'false');
 }
 
 export function plistExists(profile: string): boolean {

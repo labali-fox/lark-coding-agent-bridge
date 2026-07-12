@@ -90,6 +90,7 @@ export interface StartOptions {
   appId?: string;
   appSecret?: string;
   tenant?: string;
+  noProxy?: boolean;
   skipCheckLarkCli?: boolean;
   /** Start the machine-wide supervisor + web console instead of a single
    * profile in the foreground. Default false → classic headless run. */
@@ -107,6 +108,10 @@ export interface StartOptions {
  *    all profiles + a local web console to start/stop/configure them.
  */
 export async function runStart(opts: StartOptions): Promise<void> {
+  if (opts.noProxy === true || envFlag(process.env.LARK_CHANNEL_NO_PROXY)) {
+    clearProxyEnv();
+    process.env.LARK_CHANNEL_NO_PROXY = '1';
+  }
   if (opts.webUi) {
     await runSupervisorConsole(opts);
     return;
@@ -266,6 +271,25 @@ function parkWithShutdown(
   });
 
   return new Promise<void>(() => {});
+}
+
+const PROXY_ENV_KEYS = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+] as const;
+
+function clearProxyEnv(): void {
+  for (const key of PROXY_ENV_KEYS) {
+    delete process.env[key];
+  }
+}
+
+function envFlag(value: string | undefined): boolean {
+  return Boolean(value && value !== '0' && value !== 'false');
 }
 
 

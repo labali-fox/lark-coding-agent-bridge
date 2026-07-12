@@ -26,6 +26,8 @@ export interface LauncherInputs {
   runArgs: string[];
   /** Root directory for config/profile state. */
   channelHome: string;
+  /** Clear proxy variables inside the managed bridge runtime. */
+  noProxy?: boolean;
 }
 
 /**
@@ -46,6 +48,7 @@ export function buildLauncherCmd(inputs: LauncherInputs): string {
   return [
     '@echo off',
     `set "LARK_CHANNEL_HOME=${inputs.channelHome}"`,
+    ...(inputs.noProxy === true ? ['set "LARK_CHANNEL_NO_PROXY=1"'] : []),
     `set "PATH=${inputs.envPath}"`,
     `"${inputs.nodePath}" "${inputs.bridgeEntryPath}" ${runArgs} >> "${daemonStdoutPath(inputs.profile)}" 2>> "${daemonStderrPath(inputs.profile)}"`,
     '',
@@ -64,11 +67,16 @@ async function writeLauncherCmd(profile: string, runArgs: string[] = ['run']): P
     profile,
     runArgs,
     channelHome: paths.rootDir,
+    noProxy: envFlag(process.env.LARK_CHANNEL_NO_PROXY),
   });
   const cmdPath = windowsLauncherCmdPath(profile);
   await mkdir(dirname(cmdPath), { recursive: true });
   await mkdir(daemonLogDir(profile), { recursive: true });
   await writeFile(cmdPath, content, 'utf8');
+}
+
+function envFlag(value: string | undefined): boolean {
+  return Boolean(value && value !== '0' && value !== 'false');
 }
 
 interface SchtasksResult {
