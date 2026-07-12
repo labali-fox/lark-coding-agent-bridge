@@ -130,7 +130,8 @@ const profile = process.argv[2];
 const file = path.join(os.homedir(), '.lark-channel', 'registry', 'processes.json');
 let entries = [];
 try {
-  entries = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const root = JSON.parse(fs.readFileSync(file, 'utf8'));
+  entries = Array.isArray(root) ? root : Array.isArray(root.entries) ? root.entries : [];
 } catch {
   entries = [];
 }

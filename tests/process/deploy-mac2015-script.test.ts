@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
@@ -28,5 +29,11 @@ describe('deploy-mac2015 script contract', () => {
       code: 2,
       stderr: expect.stringContaining('Unsupported mode: destroy'),
     });
+  });
+
+  it('supports the current registry object shape when finding running bots', async () => {
+    const body = await readFile(script, 'utf8');
+
+    expect(body).toContain('Array.isArray(root.entries) ? root.entries');
   });
 });
