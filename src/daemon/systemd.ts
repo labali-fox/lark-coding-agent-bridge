@@ -24,6 +24,8 @@ export interface UnitInputs {
   profile: string;
   /** Root directory for config/profile state. */
   channelHome: string;
+  /** Clear proxy variables inside the managed bridge runtime. */
+  noProxy?: boolean;
 }
 
 /**
@@ -55,6 +57,7 @@ StandardOutput=append:${daemonStdoutPath(inputs.profile)}
 StandardError=append:${daemonStderrPath(inputs.profile)}
 Environment="PATH=${escape(inputs.envPath)}"
 Environment="LARK_CHANNEL_HOME=${escape(inputs.channelHome)}"
+${inputs.noProxy === true ? 'Environment="LARK_CHANNEL_NO_PROXY=1"\n' : ''}
 
 [Install]
 WantedBy=default.target
@@ -72,11 +75,16 @@ export async function writeUnit(profile: string): Promise<void> {
     envPath: process.env.PATH ?? '',
     profile,
     channelHome: paths.rootDir,
+    noProxy: envFlag(process.env.LARK_CHANNEL_NO_PROXY),
   });
   const unitPath = systemdUnitPath(profile);
   await mkdir(dirname(unitPath), { recursive: true });
   await mkdir(daemonLogDir(profile), { recursive: true });
   await writeFile(unitPath, content, 'utf8');
+}
+
+function envFlag(value: string | undefined): boolean {
+  return Boolean(value && value !== '0' && value !== 'false');
 }
 
 export function unitExists(profile: string): boolean {

@@ -1,0 +1,32 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { describe, expect, it } from 'vitest';
+
+const execFileAsync = promisify(execFile);
+const script = 'scripts/deploy-mac2015.sh';
+
+describe('deploy-mac2015 script contract', () => {
+  it('prints a safe help contract without opening ssh', async () => {
+    const { stdout, stderr } = await execFileAsync('bash', [script, '--help'], {
+      cwd: process.cwd(),
+    });
+
+    expect(stderr).toBe('');
+    expect(stdout).toContain('Usage: scripts/deploy-mac2015.sh [status|deploy]');
+    expect(stdout).toContain('/Users/ys-aquria/code/lark-coding-agent-bridge');
+    expect(stdout).toContain('LARK_CHANNEL_NO_PROXY=1');
+    expect(stdout).toContain('No App Secret or profile secret values are printed.');
+    expect(stdout).not.toContain('--app-secret');
+  });
+
+  it('rejects unsupported modes before opening ssh', async () => {
+    await expect(
+      execFileAsync('bash', [script, 'destroy'], {
+        cwd: process.cwd(),
+      }),
+    ).rejects.toMatchObject({
+      code: 2,
+      stderr: expect.stringContaining('Unsupported mode: destroy'),
+    });
+  });
+});

@@ -50,6 +50,7 @@ program
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
   .option('--tenant <tenant>', 'tenant for --app-id (feishu or lark; default feishu)')
+  .option('--no-proxy', 'clear HTTP(S)/ALL proxy environment variables for the bridge runtime')
   .option('--skip-check-lark-cli', 'skip lark-cli pre-flight check (auto-install + bind)')
   .action(async (opts: {
     config?: string;
@@ -59,6 +60,7 @@ program
     appId?: string;
     appSecret?: string;
     tenant?: string;
+    noProxy?: boolean;
     skipCheckLarkCli?: boolean;
   }) => {
     await runStart(opts);
@@ -233,6 +235,7 @@ program
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
   .option('--tenant <tenant>', 'tenant for --app-id (feishu or lark; default feishu)')
+  .option('--no-proxy', 'clear HTTP(S)/ALL proxy environment variables for the managed bridge runtime')
   .option('--skip-check-lark-cli', 'skip lark-cli pre-flight check (auto-install + bind)')
   .action(async (opts: {
     profile?: string;
@@ -241,6 +244,7 @@ program
     appId?: string;
     appSecret?: string;
     tenant?: string;
+    noProxy?: boolean;
     skipCheckLarkCli?: boolean;
   }) => {
     await runServiceStart(opts);

@@ -76,12 +76,17 @@ export interface StartOptions {
   appId?: string;
   appSecret?: string;
   tenant?: string;
+  noProxy?: boolean;
   skipCheckLarkCli?: boolean;
   confirmStopRuntimeLockProcess?: (err: RuntimeLockConflictError) => boolean | Promise<boolean>;
   stopRuntimeLockProcess?: (meta: RuntimeLockMeta) => StopProcessEntryResult | Promise<StopProcessEntryResult>;
 }
 
 export async function runStart(opts: StartOptions): Promise<void> {
+  if (opts.noProxy === true || envFlag(process.env.LARK_CHANNEL_NO_PROXY)) {
+    clearProxyEnv();
+    process.env.LARK_CHANNEL_NO_PROXY = '1';
+  }
   const runtime = await resolveProfileRuntime({
     ...opts,
     allowBootstrap: true,
@@ -366,6 +371,25 @@ export async function runStart(opts: StartOptions): Promise<void> {
       throw err;
     }
   }
+}
+
+const PROXY_ENV_KEYS = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+] as const;
+
+function clearProxyEnv(): void {
+  for (const key of PROXY_ENV_KEYS) {
+    delete process.env[key];
+  }
+}
+
+function envFlag(value: string | undefined): boolean {
+  return Boolean(value && value !== '0' && value !== 'false');
 }
 
 async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<AgentAvailability> {

@@ -25,6 +25,7 @@ export interface ServiceStartOptions {
   appId?: string;
   appSecret?: string;
   tenant?: string;
+  noProxy?: boolean;
   /** Skip lark-cli auto-install + bind during `start`. */
   skipCheckLarkCli?: boolean;
   confirmStopRuntimeLockProcess?: (meta: RuntimeLockMeta) => boolean | Promise<boolean>;
@@ -293,7 +294,7 @@ export async function runServiceStart(opts: ServiceStartOptions = {}): Promise<v
     },
   });
 
-  await adapter.install();
+  await withNoProxyEnv(serviceNoProxyRequested(opts), () => adapter.install());
 
   // If already running, stop first so start operations don't race.
   if (adapter.isRunning()) {
@@ -441,6 +442,29 @@ export async function runServiceUnregister(opts: ServiceProfileOptions = {}): Pr
   await adapter.deleteFile();
   console.log('✓ 已清除后台运行注册');
   console.log(`  (配置 / 日志 / 会话保留在 ${paths.rootDir})`);
+}
+
+async function withNoProxyEnv<T>(enabled: boolean, fn: () => Promise<T>): Promise<T> {
+  if (!enabled) return fn();
+  const previous = process.env.LARK_CHANNEL_NO_PROXY;
+  process.env.LARK_CHANNEL_NO_PROXY = '1';
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.LARK_CHANNEL_NO_PROXY;
+    } else {
+      process.env.LARK_CHANNEL_NO_PROXY = previous;
+    }
+  }
+}
+
+function serviceNoProxyRequested(opts: Pick<ServiceStartOptions, 'noProxy'>): boolean {
+  return opts.noProxy === true || envFlag(process.env.LARK_CHANNEL_NO_PROXY);
+}
+
+function envFlag(value: string | undefined): boolean {
+  return Boolean(value && value !== '0' && value !== 'false');
 }
 
 async function resolveServiceProfile(explicitProfile: string | undefined): Promise<string> {

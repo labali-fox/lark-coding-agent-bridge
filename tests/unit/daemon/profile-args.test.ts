@@ -40,4 +40,19 @@ describe('profile-scoped daemon paths and arguments', () => {
     expect(buildLauncherCmd(inputs)).toContain('run --profile "codex-dev"');
     expect(buildLauncherCmd(inputs)).toContain('set "LARK_CHANNEL_HOME=/tmp/lark-channel-home"');
   });
+
+  it('can pin managed daemon processes to no-proxy runtime env', () => {
+    const inputs = {
+      nodePath: '/usr/local/bin/node',
+      bridgeEntryPath: '/repo/bin/lark-channel-bridge.mjs',
+      envPath: '/usr/local/bin:/usr/bin',
+      profile: 'claude',
+      channelHome: '/tmp/lark-channel-home',
+      noProxy: true,
+    };
+
+    expect(buildPlist(inputs)).toContain('<key>LARK_CHANNEL_NO_PROXY</key>\n        <string>1</string>');
+    expect(buildUnit(inputs)).toContain('Environment="LARK_CHANNEL_NO_PROXY=1"');
+    expect(buildLauncherCmd(inputs)).toContain('set "LARK_CHANNEL_NO_PROXY=1"');
+  });
 });

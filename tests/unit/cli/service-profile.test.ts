@@ -181,6 +181,32 @@ describe('profile-aware service commands', () => {
     );
   });
 
+  it('scopes no-proxy env while installing the managed service', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const previous = process.env.LARK_CHANNEL_NO_PROXY;
+    let installEnv: string | undefined;
+    mocks.adapter.install = vi.fn(async () => {
+      installEnv = process.env.LARK_CHANNEL_NO_PROXY;
+    });
+    mocks.readAndPrune
+      .mockReturnValueOnce([])
+      .mockReturnValue([
+        processEntry({
+          id: 'p1',
+          pid: 12345,
+          appId: 'cli_codex',
+          profileName: 'codex-dev',
+          agentKind: 'codex',
+          botName: 'Codex Bot',
+        }),
+      ]);
+
+    await runServiceStart({ profile: 'codex-dev', skipCheckLarkCli: true, noProxy: true });
+
+    expect(installEnv).toBe('1');
+    expect(process.env.LARK_CHANNEL_NO_PROXY).toBe(previous);
+  });
+
   it('uses materialized config for service preflight after env secret materialization', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const materializedCfg = {
