@@ -36,4 +36,15 @@ describe('deploy-mac2015 script contract', () => {
 
     expect(body).toContain('Array.isArray(root.entries) ? root.entries');
   });
+
+  it('reports the active deployment mode and detached log path', async () => {
+    const body = await readFile(script, 'utf8');
+
+    expect(body).toContain('gui_domain_available()');
+    expect(body).toContain('launchd_service_loaded()');
+    expect(body).toContain('deployment_mode()');
+    expect(body).toContain('ai.lark-channel-bridge.bot.${BRIDGE_PROFILE}');
+    expect(body).toContain("printf 'deployment_mode=%s\\n'");
+    expect(body).toContain('detached_log_path=');
+  });
 });

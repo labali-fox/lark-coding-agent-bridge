@@ -56,6 +56,8 @@ ssh ${SSH_OPTS:-} "$remote" \
   "BRIDGE_REMOTE_DIR=$(quote "$remote_dir") BRIDGE_PROFILE=$(quote "$profile") BRIDGE_MODE=$(quote "$mode") bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
+DETACHED_LOG_PATH="$HOME/.lark-channel/logs/manual-bridge-${BRIDGE_PROFILE}.log"
+
 print_section() {
   printf '\n--- %s ---\n' "$1"
 }
@@ -121,7 +123,7 @@ try {
 NODE
 }
 
-running_ids_for_profile() {
+running_entries_for_profile() {
   node - "$BRIDGE_PROFILE" <<'NODE'
 const fs = require('node:fs');
 const os = require('node:os');
@@ -137,14 +139,59 @@ try {
 }
 for (const entry of entries) {
   if (!entry || entry.profileName !== profile || !entry.id || !entry.pid) continue;
+  const pid = Number(entry.pid);
   try {
-    process.kill(Number(entry.pid), 0);
-    console.log(entry.id);
+    process.kill(pid, 0);
+    console.log(`${entry.id}\t${pid}`);
   } catch {
     // stale registry row
   }
 }
 NODE
+}
+
+running_ids_for_profile() {
+  running_entries_for_profile | awk '{ print $1 }'
+}
+
+running_pid_for_profile() {
+  running_entries_for_profile | awk 'NR == 1 { print $2; exit }'
+}
+
+launchd_service_target() {
+  printf 'gui/%s/%s\n' "$(id -u)" "ai.lark-channel-bridge.bot.${BRIDGE_PROFILE}"
+}
+
+gui_domain_available() {
+  launchctl print "gui/$(id -u)" >/dev/null 2>&1
+}
+
+launchd_service_loaded() {
+  gui_domain_available && launchctl print "$(launchd_service_target)" >/dev/null 2>&1
+}
+
+deployment_mode() {
+  if [ -z "$(running_pid_for_profile)" ]; then
+    printf 'stopped\n'
+  elif launchd_service_loaded; then
+    printf 'launchd\n'
+  else
+    printf 'detached\n'
+  fi
+}
+
+print_deployment_mode() {
+  mode="$(deployment_mode)"
+  pid="$(running_pid_for_profile)"
+
+  printf 'deployment_mode=%s\n' "$mode"
+  if [ -n "$pid" ]; then
+    printf 'deployment_pid=%s\n' "$pid"
+  fi
+  if [ "$mode" = "detached" ]; then
+    printf 'detached_log_path=%s\n' "$DETACHED_LOG_PATH"
+    echo "Warning: detached lifecycle is not managed by launchd."
+  fi
 }
 
 wait_until_profile_stopped() {
@@ -189,6 +236,9 @@ print_remote_status() {
   print_section running
   lark-channel-bridge ps || true
   lark-channel-bridge status --profile "$BRIDGE_PROFILE" || true
+
+  print_section deployment-mode
+  print_deployment_mode
 }
 
 deploy_from_source() {
