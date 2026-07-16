@@ -72,6 +72,7 @@ async function runIsolatedStatus(options: {
         PATH: `${bin}:${process.env.PATH}`,
         REAL_NODE: realNode,
         REGISTRY_READS: registryReads,
+        SSH_OPTS: '',
         LARK_BRIDGE_REMOTE: 'isolated-test-host',
         LARK_BRIDGE_REMOTE_DIR: remoteDir,
         LARK_BRIDGE_PROFILE: 'claude',
@@ -125,7 +126,7 @@ describe('deploy-mac2015 script contract', () => {
     const body = await readFile(script, 'utf8');
 
     expect(body).toContain('gui_domain_available()');
-    expect(body).toContain('launchd_service_loaded()');
+    expect(body).toContain('launchd_service_pid()');
     expect(body).toContain('deployment_mode()');
     expect(body).toContain('ai.lark-channel-bridge.bot.${BRIDGE_PROFILE}');
     expect(body).toContain("printf 'deployment_mode=%s\\n'");
@@ -152,6 +153,16 @@ describe('deploy-mac2015 script contract', () => {
       expected: 'detached',
     },
     {
+      name: 'launchd PID after a detached registry row',
+      entries: [
+        { id: 'manual', profileName: 'claude', pid: process.pid },
+        { id: 'managed', profileName: 'claude', pid: process.ppid },
+      ],
+      launchdPid: process.ppid,
+      expected: 'launchd',
+      expectedPid: process.ppid,
+    },
+    {
       name: 'stale registry row',
       entries: [{ id: 'stale', profileName: 'claude', pid: 2_147_483_647 }],
       launchdPid: 2_147_483_647,
@@ -160,7 +171,7 @@ describe('deploy-mac2015 script contract', () => {
     },
   ])(
     'reports $expected for $name',
-    async ({ entries, launchdPid, registryRoot, expected }) => {
+    async ({ entries, launchdPid, registryRoot, expected, expectedPid }) => {
       const { stdout, home } = await runIsolatedStatus({
         entries,
         launchdPid,
@@ -171,7 +182,7 @@ describe('deploy-mac2015 script contract', () => {
       if (expected === 'stopped') {
         expect(stdout).not.toContain('deployment_pid=');
       } else {
-        expect(stdout).toContain(`deployment_pid=${process.pid}`);
+        expect(stdout).toContain(`deployment_pid=${expectedPid ?? process.pid}`);
       }
       if (expected === 'detached') {
         expect(stdout).toContain(

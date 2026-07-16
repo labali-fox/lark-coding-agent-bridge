@@ -166,10 +166,6 @@ gui_domain_available() {
   launchctl print "gui/$(id -u)" >/dev/null 2>&1
 }
 
-launchd_service_loaded() {
-  gui_domain_available && launchctl print "$(launchd_service_target)" >/dev/null 2>&1
-}
-
 launchd_service_pid() {
   gui_domain_available || return 1
   launchctl print "$(launchd_service_target)" 2>/dev/null |
@@ -178,12 +174,12 @@ launchd_service_pid() {
 
 deployment_mode() {
   entries="${1:-}"
+  launchd_pid="${2:-}"
   if [ -z "$entries" ]; then
     printf 'stopped\n'
     return
   fi
 
-  launchd_pid="$(launchd_service_pid || true)"
   if [ -n "$launchd_pid" ] &&
     printf '%s\n' "$entries" |
       awk -F '\t' -v launchd_pid="$launchd_pid" '$2 == launchd_pid { found = 1 } END { exit !found }'; then
@@ -196,8 +192,16 @@ deployment_mode() {
 
 print_deployment_mode() {
   entries="$(running_entries_for_profile)"
-  mode="$(deployment_mode "$entries")"
-  pid="$(printf '%s\n' "$entries" | awk 'NR == 1 { print $2; exit }')"
+  launchd_pid=""
+  if [ -n "$entries" ]; then
+    launchd_pid="$(launchd_service_pid || true)"
+  fi
+  mode="$(deployment_mode "$entries" "$launchd_pid")"
+  if [ "$mode" = "launchd" ]; then
+    pid="$launchd_pid"
+  else
+    pid="$(printf '%s\n' "$entries" | awk 'NR == 1 { print $2; exit }')"
+  fi
 
   printf 'deployment_mode=%s\n' "$mode"
   if [ -n "$pid" ]; then
