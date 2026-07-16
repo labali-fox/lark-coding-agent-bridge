@@ -51,7 +51,7 @@ quote() {
   printf '%q' "$1"
 }
 
-# shellcheck disable=SC2086
+# shellcheck disable=SC2086,SC2029
 ssh ${SSH_OPTS:-} "$remote" \
   "BRIDGE_REMOTE_DIR=$(quote "$remote_dir") BRIDGE_PROFILE=$(quote "$profile") BRIDGE_MODE=$(quote "$mode") bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
@@ -170,19 +170,34 @@ launchd_service_loaded() {
   gui_domain_available && launchctl print "$(launchd_service_target)" >/dev/null 2>&1
 }
 
+launchd_service_pid() {
+  gui_domain_available || return 1
+  launchctl print "$(launchd_service_target)" 2>/dev/null |
+    awk '$1 == "pid" && $2 == "=" { print $3; exit }'
+}
+
 deployment_mode() {
-  if [ -z "$(running_pid_for_profile)" ]; then
+  entries="${1:-}"
+  if [ -z "$entries" ]; then
     printf 'stopped\n'
-  elif launchd_service_loaded; then
-    printf 'launchd\n'
-  else
-    printf 'detached\n'
+    return
   fi
+
+  launchd_pid="$(launchd_service_pid || true)"
+  if [ -n "$launchd_pid" ] &&
+    printf '%s\n' "$entries" |
+      awk -F '\t' -v launchd_pid="$launchd_pid" '$2 == launchd_pid { found = 1 } END { exit !found }'; then
+    printf 'launchd\n'
+    return
+  fi
+
+  printf 'detached\n'
 }
 
 print_deployment_mode() {
-  mode="$(deployment_mode)"
-  pid="$(running_pid_for_profile)"
+  entries="$(running_entries_for_profile)"
+  mode="$(deployment_mode "$entries")"
+  pid="$(printf '%s\n' "$entries" | awk 'NR == 1 { print $2; exit }')"
 
   printf 'deployment_mode=%s\n' "$mode"
   if [ -n "$pid" ]; then
