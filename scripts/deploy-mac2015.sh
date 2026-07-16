@@ -47,6 +47,13 @@ remote="${LARK_BRIDGE_REMOTE:-mac2015}"
 remote_dir="${LARK_BRIDGE_REMOTE_DIR:-/Users/ys-aquria/code/lark-coding-agent-bridge}"
 profile="${LARK_BRIDGE_PROFILE:-claude}"
 
+case "$profile" in
+  ''|*[!A-Za-z0-9._-]*)
+    echo "Invalid profile name: use only letters, numbers, dot, underscore, and hyphen." >&2
+    exit 2
+    ;;
+esac
+
 quote() {
   printf '%q' "$1"
 }
@@ -225,6 +232,27 @@ wait_until_profile_stopped() {
   return 1
 }
 
+wait_for_profile_pid() {
+  launcher_pid="${1:-}"
+  deadline=$((SECONDS + 120))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    connected_pid="$(running_pid_for_profile)"
+    if [ -n "$connected_pid" ]; then
+      printf '%s\n' "$connected_pid"
+      return 0
+    fi
+    if [ -n "$launcher_pid" ] && ! kill -0 "$launcher_pid" 2>/dev/null; then
+      echo "Detached bridge launcher exited before registering a live PID." >&2
+      tail -n 80 "$DETACHED_LOG_PATH" >&2 || true
+      return 1
+    fi
+    sleep 1
+  done
+  echo "Timed out waiting for a live registry PID for profile $BRIDGE_PROFILE." >&2
+  tail -n 80 "$DETACHED_LOG_PATH" >&2 || true
+  return 1
+}
+
 print_remote_status() {
   print_section remote
   hostname
@@ -292,14 +320,37 @@ deploy_from_source() {
     echo "No running registry process for profile $BRIDGE_PROFILE."
   fi
 
-  print_section start-no-proxy
-  without_proxy_env
-  lark-channel-bridge start --profile "$BRIDGE_PROFILE" --skip-check-lark-cli --no-proxy
+  if gui_domain_available; then
+    selected_mode=launchd
+    print_section start-no-proxy
+    without_proxy_env
+    lark-channel-bridge start --profile "$BRIDGE_PROFILE" --skip-check-lark-cli --no-proxy
+    connected_pid="$(wait_for_profile_pid)"
+  else
+    selected_mode=detached
+    print_section start-detached-no-proxy
+    mkdir -p "$(dirname "$DETACHED_LOG_PATH")"
+    printf -v detached_command \
+      'cd %q && exec bin/install-current-and-run.sh --no-proxy run --profile %q' \
+      "$BRIDGE_REMOTE_DIR" "$BRIDGE_PROFILE"
+    nohup zsh -lic "$detached_command" </dev/null >>"$DETACHED_LOG_PATH" 2>&1 &
+    launcher_pid=$!
+    connected_pid="$(wait_for_profile_pid "$launcher_pid")"
+  fi
 
   print_section verify
+  printf 'selected_mode=%s\n' "$selected_mode"
+  printf 'connected_pid=%s\n' "$connected_pid"
   lark-channel-bridge -v
   lark-channel-bridge ps
   lark-channel-bridge status --profile "$BRIDGE_PROFILE"
+  print_deployment_mode
+  if [ "$selected_mode" = "detached" ]; then
+    printf 'detached_log_path=%s\n' "$DETACHED_LOG_PATH"
+    echo "Warning: detached lifecycle has no reboot or crash auto-restart."
+    print_section detached-log-tail
+    tail -n 80 "$DETACHED_LOG_PATH" || true
+  fi
 }
 
 find_node_tools
