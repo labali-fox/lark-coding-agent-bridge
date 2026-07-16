@@ -116,6 +116,18 @@ describe('deploy-mac2015 script contract', () => {
     });
   });
 
+  it('rejects unsafe profile names before opening ssh', async () => {
+    await expect(
+      execFileAsync('bash', [script, 'status'], {
+        cwd: process.cwd(),
+        env: { ...process.env, LARK_BRIDGE_PROFILE: 'claude; touch /tmp/nope' },
+      }),
+    ).rejects.toMatchObject({
+      code: 2,
+      stderr: expect.stringContaining('Invalid profile name'),
+    });
+  });
+
   it('supports the current registry object shape when finding running bots', async () => {
     const body = await readFile(script, 'utf8');
 
@@ -199,5 +211,32 @@ describe('deploy-mac2015 script contract', () => {
     });
 
     expect(readCount).toBe(1);
+  });
+
+  it('selects launchd or a verified detached launcher without silent fallback', async () => {
+    const body = await readFile(script, 'utf8');
+
+    expect(body).toContain('if gui_domain_available; then');
+    expect(body).toContain('selected_mode=launchd');
+    expect(body).toContain('selected_mode=detached');
+    expect(body).toContain('nohup zsh -lic');
+    expect(body).toContain('bin/install-current-and-run.sh --no-proxy run --profile');
+    expect(body).toContain('</dev/null');
+    expect(body).toContain('deadline=$((SECONDS + 120))');
+    expect(body).toContain('kill -0 "$launcher_pid"');
+    expect(body).toContain('tail -n 80 "$DETACHED_LOG_PATH"');
+    expect(body).toContain("printf 'selected_mode=%s\\n'");
+    expect(body).toContain("printf 'connected_pid=%s\\n'");
+  });
+
+  it('documents adaptive Mac2015 deployment lifecycle and reporting', async () => {
+    const docs = await readFile('.claude/commands/deploy-mac2015.md', 'utf8');
+
+    expect(docs).toContain('GUI launchd');
+    expect(docs).toContain('detached fallback');
+    expect(docs).toContain('manual-bridge-<profile>.log');
+    expect(docs).toContain('no reboot or crash auto-restart');
+    expect(docs).toContain('selected mode');
+    expect(docs).toContain('verified registry PID');
   });
 });

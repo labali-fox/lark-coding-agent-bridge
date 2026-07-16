@@ -14,10 +14,16 @@ Defaults:
 - Empty argument runs `status`.
 - `status` is read-only.
 - `deploy` pulls `origin/dev`, builds the remote source checkout, installs that
-  checkout globally with `npm i -g .`, stops the old profile process, and starts
-  the managed service with `LARK_CHANNEL_NO_PROXY=1`.
+  checkout globally with `npm i -g .`, and stops the old profile process. With a
+  GUI launchd domain it starts the managed service with `LARK_CHANNEL_NO_PROXY=1`.
+  Without that domain it uses a detached fallback running
+  `bin/install-current-and-run.sh --no-proxy run --profile <profile>`.
 - Default remote is `mac2015`.
 - Default profile is `claude`.
+
+The detached fallback writes to
+`~/.lark-channel/logs/manual-bridge-<profile>.log`. It has no reboot or crash auto-restart;
+an interactive GUI launchd session is required for managed lifecycle behavior.
 
 Do this:
 
@@ -48,7 +54,9 @@ Do this:
    - git commit before/after pull;
    - source package version, built CLI version, and global CLI version;
    - stopped old registry id/pid if any;
+   - selected mode and verified registry PID;
    - new `lark-channel-bridge ps` and `status --profile claude` result;
+   - detached log path, lifecycle warning, and recent log tail when applicable;
    - whether `LARK_CHANNEL_NO_PROXY=1` was used.
 
 5. Do not print App Secret, exported profile JSON with secrets, `.env` content,
