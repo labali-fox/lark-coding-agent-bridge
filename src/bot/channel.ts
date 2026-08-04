@@ -1326,9 +1326,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Add a "Typing" reaction to the triggering message as an instant ack, but
   // never let that outbound API call block agent event draining.
   const reactionPromise =
-    ambientAutoRun || cotEnabled || replyMode === 'card'
-      ? undefined
-      : addWorkingReaction(channel, lastMsg.messageId);
+    ambientAutoRun || (!cotEnabled && replyMode !== 'card')
+      ? addWorkingReaction(channel, lastMsg.messageId)
+      : undefined;
 
   try {
     if (ambientAutoRun) {

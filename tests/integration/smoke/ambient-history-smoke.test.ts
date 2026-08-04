@@ -64,6 +64,8 @@ interface FakeLarkChannel {
   getConnectionStatus(): { state: 'connected'; reconnectAttempts: number };
   send(chatId: string, content: unknown, options?: unknown): Promise<void>;
   stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
+  addReaction(messageId: string, emojiType: string): Promise<string>;
+  removeReaction(messageId: string, reactionId: string): Promise<void>;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -101,6 +103,7 @@ describe('ambient group history smoke flow', () => {
     }));
 
     await waitFor(() => h.agent.runOptions.length === 1);
+    await waitFor(() => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0);
 
     expect(ambientDecisionRunner).toHaveBeenCalledWith(expect.objectContaining({
       level: 'active',
@@ -113,6 +116,13 @@ describe('ambient group history smoke flow', () => {
       ]),
     }));
     expect(h.agent.runOptions[0]?.prompt).toContain('lark-channel-bridge history tail');
+    expect(h.channel.rawClient.im.v1.messageReaction.create).toHaveBeenCalledWith({
+      path: { message_id: 'om_unmentioned' },
+      data: { reaction_type: { emoji_type: 'Typing' } },
+    });
+    expect(h.channel.rawClient.im.v1.messageReaction.delete).toHaveBeenCalledWith({
+      path: { message_id: 'om_unmentioned', reaction_id: 'reaction_1' },
+    });
 
     const store = new ChatHistoryStore(resolveAppPaths({ rootDir: h.tmp.root, profile: 'test' }).historyDir);
     await expect(store.tail({ chatId: 'oc_chat', limit: 5 })).resolves.toMatchObject([
@@ -259,6 +269,18 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
       sent.push({ chatId, content, options });
     },
     async stream() {},
+    async addReaction(messageId, emojiType) {
+      const r = await this.rawClient.im.v1.messageReaction.create({
+        path: { message_id: messageId },
+        data: { reaction_type: { emoji_type: emojiType } },
+      });
+      return (r as { data?: { reaction_id?: string } })?.data?.reaction_id ?? '';
+    },
+    async removeReaction(messageId, reactionId) {
+      await this.rawClient.im.v1.messageReaction.delete({
+        path: { message_id: messageId, reaction_id: reactionId },
+      });
+    },
   };
 }
 
