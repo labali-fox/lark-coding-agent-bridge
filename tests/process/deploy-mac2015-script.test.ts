@@ -229,6 +229,15 @@ describe('deploy-mac2015 script contract', () => {
     expect(body).toContain("printf 'connected_pid=%s\\n'");
   });
 
+  it('restarts launchd-managed deployments instead of killing the managed process', async () => {
+    const body = await readFile(script, 'utf8');
+
+    expect(body).toContain('current_mode="$(deployment_mode "$entries" "$launchd_pid")"');
+    expect(body).toContain('if [ "$current_mode" = "launchd" ]; then');
+    expect(body).toContain('lark-channel-bridge restart --profile "$BRIDGE_PROFILE"');
+    expect(body).toContain('elif [ -n "$ids" ]; then');
+  });
+
   it('documents adaptive Mac2015 deployment lifecycle and reporting', async () => {
     const docs = await readFile('.claude/commands/deploy-mac2015.md', 'utf8');
 

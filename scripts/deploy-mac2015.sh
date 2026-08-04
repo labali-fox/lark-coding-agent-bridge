@@ -309,9 +309,21 @@ deploy_from_source() {
   command -v lark-channel-bridge
   lark-channel-bridge -v
 
-  print_section stop-old-profile
-  ids="$(running_ids_for_profile)"
-  if [ -n "$ids" ]; then
+  print_section restart-old-profile
+  entries="$(running_entries_for_profile)"
+  launchd_pid=""
+  if [ -n "$entries" ]; then
+    launchd_pid="$(launchd_service_pid || true)"
+  fi
+  current_mode="$(deployment_mode "$entries" "$launchd_pid")"
+  ids="$(printf '%s\n' "$entries" | awk '{ print $1 }')"
+  printf 'current_mode=%s\n' "$current_mode"
+
+  if [ "$current_mode" = "launchd" ]; then
+    selected_mode=launchd
+    lark-channel-bridge restart --profile "$BRIDGE_PROFILE"
+    connected_pid="$(wait_for_profile_pid)"
+  elif [ -n "$ids" ]; then
     for id in $ids; do
       lark-channel-bridge kill "$id"
     done
@@ -320,22 +332,24 @@ deploy_from_source() {
     echo "No running registry process for profile $BRIDGE_PROFILE."
   fi
 
-  if gui_domain_available; then
-    selected_mode=launchd
-    print_section start-no-proxy
-    without_proxy_env
-    lark-channel-bridge start --profile "$BRIDGE_PROFILE" --skip-check-lark-cli --no-proxy
-    connected_pid="$(wait_for_profile_pid)"
-  else
-    selected_mode=detached
-    print_section start-detached-no-proxy
-    mkdir -p "$(dirname "$DETACHED_LOG_PATH")"
-    printf -v detached_command \
-      'cd %q && exec bin/install-current-and-run.sh --no-proxy run --profile %q' \
-      "$BRIDGE_REMOTE_DIR" "$BRIDGE_PROFILE"
-    nohup zsh -lic "$detached_command" </dev/null >>"$DETACHED_LOG_PATH" 2>&1 &
-    launcher_pid=$!
-    connected_pid="$(wait_for_profile_pid "$launcher_pid")"
+  if [ "${selected_mode:-}" = "" ]; then
+    if gui_domain_available; then
+      selected_mode=launchd
+      print_section start-no-proxy
+      without_proxy_env
+      lark-channel-bridge start --profile "$BRIDGE_PROFILE" --skip-check-lark-cli --no-proxy
+      connected_pid="$(wait_for_profile_pid)"
+    else
+      selected_mode=detached
+      print_section start-detached-no-proxy
+      mkdir -p "$(dirname "$DETACHED_LOG_PATH")"
+      printf -v detached_command \
+        'cd %q && exec bin/install-current-and-run.sh --no-proxy run --profile %q' \
+        "$BRIDGE_REMOTE_DIR" "$BRIDGE_PROFILE"
+      nohup zsh -lic "$detached_command" </dev/null >>"$DETACHED_LOG_PATH" 2>&1 &
+      launcher_pid=$!
+      connected_pid="$(wait_for_profile_pid "$launcher_pid")"
+    fi
   fi
 
   print_section verify
