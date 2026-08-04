@@ -312,6 +312,102 @@ describe('Bridge command contracts', () => {
     expect(root?.profiles.claude?.access.allowedUsers).not.toContain('ou-alice');
   });
 
+  it('makes the /new chat creator the Feishu owner and bridge admin without setting managers', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('/new chat Project Room', { senderId: 'ou-creator' }),
+    ).resolves.toBe(true);
+
+    let root = await loadRootConfig(h.controls.configPath);
+    const createdChatId = root?.profiles.claude?.access.allowedChats.find((chatId) =>
+      chatId.startsWith('oc_fake_')
+    );
+    expect(createdChatId).toBeTruthy();
+    expect(root?.profiles.claude?.access.admins).toContain('ou-creator');
+    expect(h.channel.rawClient.requests).toContainEqual({
+      method: 'im.v1.chat.create',
+      params: expect.objectContaining({
+        params: { user_id_type: 'open_id', set_bot_manager: true },
+        data: expect.objectContaining({
+          owner_id: 'ou-creator',
+          user_id_list: ['ou-creator'],
+        }),
+      }),
+    });
+    const createRequest = h.channel.rawClient.requests.find(
+      (request) => request.method === 'im.v1.chat.create',
+    );
+    expect(createRequest?.params).toMatchObject({
+      data: expect.objectContaining({ owner_id: 'ou-creator' }),
+    });
+    expect(h.channel.rawClient.requests.some((request) =>
+      request.method === 'rawClient.request' &&
+      typeof request.params === 'object' &&
+      request.params !== null &&
+      String((request.params as { url?: unknown }).url ?? '').includes('/managers/add_managers'),
+    )).toBe(false);
+    expect(lastMarkdown(h.channel)).toContain('飞书群主');
+
+    await expect(
+      h.run('/remove group', {
+        senderId: 'ou-creator',
+        chatId: createdChatId,
+        scope: createdChatId,
+        chatMode: 'group',
+      }),
+    ).resolves.toBe(true);
+
+    root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).not.toContain(createdChatId);
+    expect(lastMarkdown(h.channel)).toContain('已把当前群移出响应群名单');
+  });
+
+  it('does not expose unsupported Feishu manager repair commands', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('/invite manager @Alice', {
+        senderId: 'ou-admin',
+        chatId: 'oc-existing-group',
+        scope: 'oc-existing-group',
+        chatMode: 'group',
+        mentions: [mention('ou-alice', 'Alice')],
+      }),
+    ).resolves.toBe(true);
+
+    expect(h.channel.rawClient.requests.some((request) =>
+      request.method === 'rawClient.request' &&
+      typeof request.params === 'object' &&
+      request.params !== null &&
+      String((request.params as { url?: unknown }).url ?? '').includes('/managers/add_managers'),
+    )).toBe(false);
+    expect(lastMarkdown(h.channel)).toContain('用法');
+    expect(lastMarkdown(h.channel)).not.toContain('/invite manager');
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.admins).not.toContain('ou-alice');
+  });
+
+  it('persists a /new chat binding without requiring Feishu manager assignment', async () => {
+    const h = await createHarness();
+    (h.channel.rawClient as unknown as {
+      request(payload: unknown, params?: unknown): Promise<unknown>;
+    }).request = async (payload: unknown) => {
+      h.channel.rawClient.requests.push({ method: 'rawClient.request', params: payload });
+      return { code: 232038, msg: 'operator is not chat owner' };
+    };
+
+    await expect(
+      h.run('/new chat Project Room', { senderId: 'ou-creator' }),
+    ).resolves.toBe(true);
+
+    expect(h.channel.rawClient.requests.some((request) => request.method === 'im.v1.chat.create')).toBe(true);
+    const root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats.some((chatId) => chatId.startsWith('oc_fake_'))).toBe(true);
+    expect(root?.profiles.claude?.access.admins).toContain('ou-creator');
+    expect(lastMarkdown(h.channel)).toContain('飞书群主');
+  });
+
   it('manages current-group no-at policy through /invite and /remove group flags', async () => {
     const h = await createHarness();
 

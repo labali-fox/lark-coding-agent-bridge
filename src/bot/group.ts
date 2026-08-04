@@ -13,17 +13,24 @@ export interface CreatedChat {
 }
 
 /**
- * Create a private group chat with the bot (as creator) and one user. Returns
- * the new chat_id. Requires `im:chat` scope on the bot.
+ * Create a private group chat owned by the requesting user. The bot stays in
+ * the group as the app participant; bridge access is persisted by the caller.
  */
 export async function createBoundChat(opts: CreateBoundChatOptions): Promise<CreatedChat> {
   const { channel, name, inviteOpenId, description } = opts;
-  const { chatId } = await channel.createChat({
-    name,
-    description,
-    inviteUserIds: [inviteOpenId],
-    userIdType: 'open_id',
-  });
+  const result = await channel.rawClient.im.v1.chat.create({
+    params: { user_id_type: 'open_id', set_bot_manager: true },
+    data: {
+      name,
+      description,
+      chat_mode: 'group',
+      chat_type: 'private',
+      owner_id: inviteOpenId,
+      user_id_list: [inviteOpenId],
+    },
+  }) as { data?: { chat_id?: string } };
+  const chatId = result.data?.chat_id;
+  if (!chatId) throw new Error('im.v1.chat.create returned no chat_id');
   return { chatId, name };
 }
 

@@ -29,7 +29,7 @@ export interface FakeChannel {
   fetchRawMessage(messageId: string): Promise<Array<{ thread_id?: string }>>;
   readonly rawClient: {
     readonly requests: FakeRawClientRequest[];
-    request(method: string, params: unknown): Promise<unknown>;
+    request(payload: unknown, params?: unknown): Promise<unknown>;
     readonly cardkit: {
       readonly v1: {
         readonly card: {
@@ -40,6 +40,9 @@ export interface FakeChannel {
     };
     readonly im: {
       readonly v1: {
+        readonly chat: {
+          create(params: unknown): Promise<unknown>;
+        };
         readonly message: {
           create(params: unknown): Promise<unknown>;
           reply(params: unknown): Promise<unknown>;
@@ -84,9 +87,13 @@ export function createFakeChannel(): FakeChannel {
     },
     rawClient: {
       requests,
-      async request(method: string, params: unknown): Promise<unknown> {
-        requests.push({ method, params });
-        return undefined;
+      async request(payload: unknown, params?: unknown): Promise<unknown> {
+        if (typeof payload === 'string') {
+          requests.push({ method: payload, params });
+        } else {
+          requests.push({ method: 'rawClient.request', params: payload });
+        }
+        return { code: 0, msg: 'success', data: {} };
       },
       cardkit: {
         v1: {
@@ -106,6 +113,12 @@ export function createFakeChannel(): FakeChannel {
       },
       im: {
         v1: {
+          chat: {
+            async create(params: unknown): Promise<unknown> {
+              requests.push({ method: 'im.v1.chat.create', params });
+              return { data: { chat_id: `oc_fake_${nextMessage++}` } };
+            },
+          },
           message: {
             async create(params: unknown): Promise<unknown> {
               return { data: pushManagedCardMessage(params, '') };

@@ -272,6 +272,7 @@ To let other people or groups in, add them to one of three lists:
 - **Let the agent look up this group's prior context when needed** → send `/invite group history on`; history is off by default
 - **First-time setup, onboard every group the bot is already in** → `/invite all group` pulls them all into the list at once; trim with `/remove group` afterwards
 - **Add a co-admin** → `/invite admin @them`
+- **Create a new managed group** → `/new chat [name]` creates a Feishu/Lark group where the creator becomes the native group owner and a bridge admin.
 
 ### Worth knowing
 

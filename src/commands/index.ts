@@ -355,7 +355,7 @@ async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await reply(ctx, `❌ 创建群失败：${msg}\n\n确认 bot 已开启 \`im:chat\` 权限。`);
+    await reply(ctx, `❌ 创建群失败：${msg}\n\n确认 bot 已开启 \`im:chat\` 权限，并且应用对你可见。`);
     return;
   }
 
@@ -365,10 +365,22 @@ async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void
     ctx.workspaces.setCwd(created.chatId, sourceCwd);
   }
 
+  await saveAccessConfig(ctx, (current) => {
+    const allowedChats = new Set(current.allowedChats);
+    const admins = new Set(current.admins);
+    allowedChats.add(created.chatId);
+    admins.add(ctx.msg.senderId);
+    return {
+      ...current,
+      allowedChats: [...allowedChats],
+      admins: [...admins],
+    };
+  });
+
   // Welcome the user inside the new group with a hint about how to start.
   const welcome = sourceCwd
-    ? `🎉 群已建好，cwd 继承自原群：\`${sourceCwd}\`\n\n@我 + 任意消息开始对话。`
-    : '🎉 群已建好。\n\n@我 + 任意消息开始对话。';
+    ? `🎉 群已建好，cwd 继承自原群：\`${sourceCwd}\`\n\n你已成为飞书群主和 bridge 管理员，可直接在飞书里管理群成员。机器人仍在群里，可继续响应消息。\n\n@我 + 任意消息开始对话。`
+    : '🎉 群已建好。\n\n你已成为飞书群主和 bridge 管理员，可直接在飞书里管理群成员。机器人仍在群里，可继续响应消息。\n\n@我 + 任意消息开始对话。';
   try {
     await ctx.channel.send(created.chatId, { markdown: welcome });
   } catch (err) {
@@ -377,7 +389,7 @@ async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void
 
   await reply(
     ctx,
-    `✓ 已创建群 **${created.name}**，去新群里继续。`,
+    `✓ 已创建群 **${created.name}**，你已成为飞书群主和 bridge 管理员；去新群里继续。`,
   );
 }
 
