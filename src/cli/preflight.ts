@@ -603,6 +603,7 @@ function printInstallFailedWarning(): void {
 function printBindFailedWarning(result: RunResult, appPaths?: AppPaths): void {
   const profile = appPaths?.profile;
   const tooOld = isUnsupportedLarkChannelSource(result.output);
+  const keychainWriteRestricted = isKeychainWriteRestricted(result.output);
   const lines = tooOld
     ? [
         'The installed lark-cli does not support the lark-channel source required by bridge auto-configuration.',
@@ -612,6 +613,15 @@ function printBindFailedWarning(result: RunResult, appPaths?: AppPaths): void {
         '  1. Install a lark-cli build that supports the lark-channel source.',
         `  2. ${restartInstruction(profile)}`,
       ]
+    : keychainWriteRestricted
+      ? [
+          'lark-cli cannot write to macOS keychain from the current bridge runtime.',
+          'Bridge will keep listening for messages, but this profile did not finish lark-cli configuration.',
+          '',
+          'Recovery:',
+          `  1. Run in a local Terminal: ${BOLD}lark-cliconfig keychain-downgrade${RESET}`,
+          `  2. ${restartInstruction(profile)}`,
+        ]
     : [
         'Bridge will keep listening for messages, but this profile did not finish lark-cli configuration.',
         'Impact: the agent may be unable to send messages, send cards, or call Feishu/Lark APIs through lark-cli.',
@@ -650,6 +660,14 @@ function isUnsupportedLarkChannelSource(output: string): boolean {
     /invalid --source[^-\n]*lark-channel/i.test(output) ||
     /unsupported source:\s*lark-channel/i.test(output) ||
     (/invalid --source[^-\n]*lark-channel/i.test(output) && /valid values:\s*\S+/i.test(output))
+  );
+}
+
+function isKeychainWriteRestricted(output: string): boolean {
+  return (
+    /keychain/i.test(output) &&
+    (/访问受限/.test(output) || /无法执行写入操作/.test(output) || /write/i.test(output)) &&
+    /keychain-downgrade/i.test(output)
   );
 }
 

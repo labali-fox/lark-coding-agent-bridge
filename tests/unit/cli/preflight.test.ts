@@ -465,6 +465,39 @@ describe('lark-cli preflight', () => {
     expect(printed).not.toContain('npm install -g @larksuite/cli');
   });
 
+  it('prints keychain downgrade recovery when lark-cli cannot write to keychain', async () => {
+    const root = await tempRoot();
+    const appPaths = resolveAppPaths({ rootDir: root, profile: 'codex' });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    mocks.exitCodes = [2];
+    mocks.outputs = [
+      '由于当前环境 keychain 访问受限，无法执行写入操作。需要在本地终端执行 lark-cliconfig keychain-downgrade 后重启 bridge 才能正常记录。',
+    ];
+
+    let printed = '';
+    try {
+      await preFlightChecks({
+        larkChannel: {
+          profile: appPaths.profile,
+          rootDir: appPaths.rootDir,
+          configPath: appPaths.configFile,
+          larkCliConfigDir: appPaths.larkCliConfigDir,
+          larkCliSourceConfigFile: appPaths.larkCliSourceConfigFile,
+        },
+        bridgeConfig,
+        appPaths,
+      });
+      printed = log.mock.calls.map((args) => args.join(' ')).join('\n');
+    } finally {
+      log.mockRestore();
+    }
+
+    expect(printed).toContain('lark-cli cannot write to macOS keychain from the current bridge runtime.');
+    expect(printed).toContain('lark-cliconfig keychain-downgrade');
+    expect(printed).toContain('lark-channel-bridge restart --profile codex');
+    expect(printed).not.toContain('valid App Secret');
+  });
+
   it('does not rebind when private target config already matches the current bridge profile', async () => {
     const root = await tempRoot();
     const appPaths = resolveAppPaths({ rootDir: root, profile: 'codex' });
