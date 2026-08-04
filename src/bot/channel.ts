@@ -1156,12 +1156,17 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const prevModel = lastRunModelByScope.get(scope);
   const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
   lastRunModelByScope.set(scope, modelSelection);
-  const extraInstructions = modelSwitched
-    ? [
-        `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
-          '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
-      ]
-    : undefined;
+  const ambientAutoRun = isUnmentionedGroupAutoRun(batch);
+  const extraInstructions = [
+    ...(modelSwitched
+      ? [
+          `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
+            '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
+        ]
+      : []),
+    ...(ambientAutoRun ? AMBIENT_AUTO_RUN_INSTRUCTIONS : []),
+  ];
+  const promptExtraInstructions = extraInstructions.length > 0 ? extraInstructions : undefined;
 
   const prompt = buildPrompt(
     batch,
@@ -1169,7 +1174,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     quotes,
     topicContext,
     channel.botIdentity,
-    extraInstructions,
+    promptExtraInstructions,
     controls,
   );
   log.info('prompt', 'built', {
@@ -1293,7 +1298,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const replyMode = getMessageReplyMode(controls.cfg);
   log.info('flush', 'reply-mode', { mode: replyMode });
   const cotMessages = getCotMessages(controls.cfg);
-  const cotEnabled = cotMessages !== 'off';
+  const cotEnabled = !ambientAutoRun && cotMessages !== 'off';
 
   // Re-read prefs on every flush so toggling /config mid-stream takes
   // effect immediately. Cheap object lookups, no allocation when on.
@@ -1321,9 +1326,42 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Add a "Typing" reaction to the triggering message as an instant ack, but
   // never let that outbound API call block agent event draining.
   const reactionPromise =
-    cotEnabled || replyMode === 'card' ? undefined : addWorkingReaction(channel, lastMsg.messageId);
+    ambientAutoRun || cotEnabled || replyMode === 'card'
+      ? undefined
+      : addWorkingReaction(channel, lastMsg.messageId);
 
   try {
+    if (ambientAutoRun) {
+      const finalState = await processAgentStream(
+        handle,
+        eventStream,
+        scope,
+        idleTimeoutMs,
+        recordSession,
+        async () => {},
+      );
+      const replyState = ambientAutoReplyState(finalState);
+      const body = renderText(replyState);
+      if (shouldSuppressAmbientAutoReply(replyState, body)) {
+        log.info('outbound', 'skip-ambient-auto-nonparticipation', {
+          scope,
+          chars: body.length,
+        });
+        return;
+      }
+      await sendFinalReply({
+        channel,
+        chatId,
+        scope,
+        state: replyState,
+        replyMode,
+        sendOpts,
+        cardRenderOptions,
+        markdownStreamingState,
+      });
+      return;
+    }
+
     if (cotEnabled) {
       const cotPublisher = new CotPublisher({
         client: cotClient,
@@ -2112,6 +2150,44 @@ function scheduleWorkingReactionCleanup(
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+const AMBIENT_AUTO_RUN_INSTRUCTIONS = [
+  '这次输入来自群聊里的未 @ 自动检查。只有在你能直接提供有价值的推进、答案、风险提示或总结时才回复。',
+  '如果判断不需要参与、与 bot 无关、只是人类之间的闲聊/确认/状态同步,请输出空内容,不要解释“我不参与”“与我无关”“不需要回复”。',
+];
+
+function isUnmentionedGroupAutoRun(batch: NormalizedMessage[]): boolean {
+  return batch.length > 0 && batch.every((msg) => msg.chatType !== 'p2p' && !msg.mentionedBot);
+}
+
+function ambientAutoReplyState(state: RunState): RunState {
+  const blocks = state.finalText
+    ? [{ kind: 'text' as const, content: state.finalText, streaming: false }]
+    : state.blocks.filter((block) => block.kind === 'text');
+  return { ...state, blocks, finalText: undefined };
+}
+
+function shouldSuppressAmbientAutoReply(state: RunState, body: string): boolean {
+  if (state.terminal !== 'done') return true;
+  const normalized = body
+    .replace(/[\s*_`~>#[\](){}.,，。！？!?;；:："'“”‘’、-]+/g, '')
+    .toLocaleLowerCase();
+  if (!normalized) return true;
+  return AMBIENT_NON_PARTICIPATION_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+const AMBIENT_NON_PARTICIPATION_PATTERNS = [
+  /不关我事/,
+  /跟我无关/,
+  /与我无关/,
+  /和我无关/,
+  /不需要(?:我|机器人|bot|ai|agent)?(?:回复|参与|介入|处理|回答)/,
+  /无需(?:我|机器人|bot|ai|agent)?(?:回复|参与|介入|处理|回答)/,
+  /不用(?:我|机器人|bot|ai|agent)?(?:回复|参与|介入|处理|回答)/,
+  /没有(?:需要|必要)(?:我|机器人|bot|ai|agent)?(?:回复|参与|介入|处理|回答)/,
+  /(?:我|机器人|bot|ai|agent)?(?:不|无需|不用)(?:参与|介入|插话)/,
+  /(?:不予|不做|不进行)(?:回复|回应|回答)/,
+] as const;
 
 function buildPrompt(
   batch: NormalizedMessage[],

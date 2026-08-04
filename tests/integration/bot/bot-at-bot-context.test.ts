@@ -38,6 +38,7 @@ interface MessageHandlerMap {
 
 interface FakeLarkChannel {
   sent: Array<{ chatId: string; content: unknown; options?: unknown }>;
+  streams: unknown[];
   botIdentity: { openId: string; name: string };
   rawClient: {
     request: ReturnType<typeof vi.fn>;
@@ -65,7 +66,7 @@ interface FakeLarkChannel {
   disconnect(): Promise<void>;
   getChatMode(chatId: string): Promise<'group' | 'topic'>;
   getConnectionStatus(): { state: 'connected'; reconnectAttempts: number };
-  send(chatId: string, content: unknown, options?: unknown): Promise<void>;
+  send(chatId: string, content: unknown, options?: unknown): Promise<{ messageId: string }>;
   stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
 }
 
@@ -254,6 +255,117 @@ describe('sender identity in bridge_context', () => {
     );
 
     await waitFor(() => h.agent.runOptions.length === 1);
+  });
+
+  it('keeps ambient auto-runs silent when the agent decides it has nothing useful to add', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { responseMode: 'ambient', ambientLevel: 'balanced' },
+      },
+    });
+    h.agent.setEvents([
+      { type: 'text', delta: '这跟我无关，不需要回复。' },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+    await startTestBridge(h, {
+      ambientDecisionRunner: async () => ({ respond: true, reason: 'candidate' }),
+    });
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_ambient_irrelevant_reply',
+        content: '这个方案是不是要先拆边界再推进？',
+        mentionedBot: false,
+      }),
+    );
+
+    await waitFor(() => h.agent.runOptions.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    expect(h.channel.sent).toHaveLength(0);
+    expect(h.channel.streams).toHaveLength(0);
+  });
+
+  it('still sends useful ambient auto-run replies', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { responseMode: 'ambient', ambientLevel: 'balanced' },
+      },
+    });
+    h.agent.setEvents([
+      { type: 'text', delta: '建议先确认 owner，再拆分配置迁移和运行时验证两步。' },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+    await startTestBridge(h, {
+      ambientDecisionRunner: async () => ({ respond: true, reason: 'candidate' }),
+    });
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_ambient_useful_reply',
+        content: '这个方案是不是要先拆边界再推进？',
+        mentionedBot: false,
+      }),
+    );
+
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(lastMarkdown(h.channel)).toContain('建议先确认 owner');
+    expect(h.channel.streams).toHaveLength(0);
+  });
+
+  it('sends useful Codex-style final_text ambient auto-run replies', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { responseMode: 'ambient', ambientLevel: 'balanced' },
+      },
+    });
+    h.agent.setEvents([
+      { type: 'final_text', content: '可以先把 owner 校验和运行时验证拆成两个步骤。' },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+    await startTestBridge(h, {
+      ambientDecisionRunner: async () => ({ respond: true, reason: 'candidate' }),
+    });
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_ambient_final_text_reply',
+        content: '这个方案是不是要先拆边界再推进？',
+        mentionedBot: false,
+      }),
+    );
+
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(lastMarkdown(h.channel)).toContain('owner 校验');
+    expect(h.channel.streams).toHaveLength(0);
+  });
+
+  it('keeps tool-only ambient auto-runs silent', async () => {
+    const h = await createHarness({
+      chatPolicies: {
+        oc_chat: { responseMode: 'ambient', ambientLevel: 'balanced' },
+      },
+    });
+    h.agent.setEvents([
+      { type: 'tool_use', id: 'tool_1', name: 'Bash', input: { command: 'pwd' } },
+      { type: 'tool_result', id: 'tool_1', output: '/tmp/project', isError: false },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+    await startTestBridge(h, {
+      ambientDecisionRunner: async () => ({ respond: true, reason: 'candidate' }),
+    });
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_ambient_tool_only',
+        content: '这个方案是不是要先拆边界再推进？',
+        mentionedBot: false,
+      }),
+    );
+
+    await waitFor(() => h.agent.runOptions.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    expect(h.channel.sent).toHaveLength(0);
+    expect(h.channel.streams).toHaveLength(0);
   });
 
   it('queues clear technical ambient candidates without starting an AI decision', async () => {
@@ -729,9 +841,11 @@ async function startTestBridge(h: {
 function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
   const sent: FakeLarkChannel['sent'] = [];
+  const streams: unknown[] = [];
   return {
     handlers,
     sent,
+    streams,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -774,8 +888,10 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
     },
     async send(chatId, content, options) {
       sent.push({ chatId, content, options });
+      return { messageId: `om_sent_${sent.length}` };
     },
     async stream(_chatId, input) {
+      streams.push(input);
       if (isMarkdownStreamInput(input)) {
         await input.markdown({ setContent: async () => {} });
       }
