@@ -285,6 +285,67 @@ describe('sender identity in bridge_context', () => {
     expect(h.channel.streams).toHaveLength(0);
   });
 
+  it.each([
+    ['ambient', 'text'],
+    ['ambient', 'final_text'],
+    ['always', 'text'],
+    ['always', 'final_text'],
+  ] as const)('delivers daily summaries containing opt-out phrases in %s mode with %s events', async (responseMode, eventType) => {
+    const h = await createHarness({
+      chatPolicies: { oc_chat: { responseMode, ambientLevel: 'balanced' } },
+    });
+    const summary = [
+      '## 今天活动总结',
+      '**总提交：19 次**',
+      '- `fix(interview)`: 主持误判无需回答时在同轮纠正一次',
+      '- 完成了笔录批量下载功能，并添加文件有效期提示',
+    ].join('\n');
+    h.agent.setEvents([
+      eventType === 'text'
+        ? { type: 'text', delta: summary }
+        : { type: 'final_text', content: summary },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+    await startTestBridge(h, {
+      ambientDecisionRunner: async () => ({ respond: true, reason: 'summary-request' }),
+    });
+
+    await h.channel.handlers.message?.(message({
+      messageId: 'om_daily_summary',
+      content: '帮我重新汇报一下，大家今天做了什么',
+      mentionedBot: false,
+    }));
+
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(lastMarkdown(h.channel)).toContain(summary);
+    expect(h.channel.streams).toHaveLength(0);
+  });
+
+  it('keeps the explicit no-reply control response out of the chat', async () => {
+    const h = await createHarness({
+      chatPolicies: { oc_chat: { responseMode: 'ambient', ambientLevel: 'balanced' } },
+    });
+    h.agent.setEvents([
+      { type: 'text', delta: '[[NO_REPLY]]' },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+    await startTestBridge(h, {
+      ambientDecisionRunner: async () => ({ respond: true, reason: 'candidate' }),
+    });
+
+    await h.channel.handlers.message?.(message({
+      messageId: 'om_explicit_opt_out',
+      content: '这个方案是不是要先拆边界再推进？',
+      mentionedBot: false,
+    }));
+
+    await waitFor(() => h.agent.runOptions.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    expect(h.agent.runOptions[0]?.prompt).toContain('[[NO_REPLY]]');
+    expect(h.channel.sent).toHaveLength(0);
+    expect(h.channel.streams).toHaveLength(0);
+  });
+
   it('still sends useful ambient auto-run replies', async () => {
     const h = await createHarness({
       chatPolicies: {
@@ -972,7 +1033,7 @@ function message(input: {
       (mentionedBot ? [{ key: '@_user_1', openId: 'ou_bot', name: 'Bridge', isBot: true }] : []),
     mentionAll: false,
     mentionedBot,
-    createTime: 1760000001000,
+    createTime: Date.now(),
     ...(input.rawSenderType
       ? {
           raw: {

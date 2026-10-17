@@ -319,7 +319,7 @@ function message(input: {
       : [],
     mentionAll: false,
     mentionedBot: input.mentionedBot,
-    createTime: Date.parse('2026-07-11T00:00:00.000Z'),
+    createTime: Date.now(),
   } as unknown as NormalizedMessage;
 }
 

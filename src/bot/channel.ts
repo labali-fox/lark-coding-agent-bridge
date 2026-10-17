@@ -5,6 +5,7 @@ import type {
 } from '@larksuite/channel';
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
+import { AMBIENT_NO_REPLY, isAmbientNonParticipation } from '../ambient/auto-reply';
 import {
   ambientPrefilter,
   isSlashCommand,
@@ -2153,7 +2154,7 @@ function delay(ms: number): Promise<void> {
 
 const AMBIENT_AUTO_RUN_INSTRUCTIONS = [
   '这次输入来自群聊里的未 @ 自动检查。只有在你能直接提供有价值的推进、答案、风险提示或总结时才回复。',
-  '如果判断不需要参与、与 bot 无关、只是人类之间的闲聊/确认/状态同步,请输出空内容,不要解释“我不参与”“与我无关”“不需要回复”。',
+  `如果判断不需要参与、与 bot 无关、只是人类之间的闲聊/确认/状态同步,请仅输出 ${AMBIENT_NO_REPLY},不要添加解释、引号或 Markdown。此标记只能单独使用,不能混入正常回复。`,
 ];
 
 function isUnmentionedGroupAutoRun(batch: NormalizedMessage[]): boolean {
@@ -2169,25 +2170,8 @@ function ambientAutoReplyState(state: RunState): RunState {
 
 function shouldSuppressAmbientAutoReply(state: RunState, body: string): boolean {
   if (state.terminal !== 'done') return true;
-  const normalized = body
-    .replace(/[\s*_`~>#[\](){}.,，。！？!?;；:："'“”‘’、-]+/g, '')
-    .toLocaleLowerCase();
-  if (!normalized) return true;
-  return AMBIENT_NON_PARTICIPATION_PATTERNS.some((pattern) => pattern.test(normalized));
+  return isAmbientNonParticipation(body);
 }
-
-const AMBIENT_NON_PARTICIPATION_PATTERNS = [
-  /不关我事/,
-  /跟我无关/,
-  /与我无关/,
-  /和我无关/,
-  /不需要(?:我|机器人|bot|ai|agent)?(?:回复|参与|介入|处理|回答)/,
-  /无需(?:我|机器人|bot|ai|agent)?(?:回复|参与|介入|处理|回答)/,
-  /不用(?:我|机器人|bot|ai|agent)?(?:回复|参与|介入|处理|回答)/,
-  /没有(?:需要|必要)(?:我|机器人|bot|ai|agent)?(?:回复|参与|介入|处理|回答)/,
-  /(?:我|机器人|bot|ai|agent)?(?:不|无需|不用)(?:参与|介入|插话)/,
-  /(?:不予|不做|不进行)(?:回复|回应|回答)/,
-] as const;
 
 function buildPrompt(
   batch: NormalizedMessage[],
