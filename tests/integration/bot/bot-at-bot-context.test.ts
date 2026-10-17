@@ -39,6 +39,7 @@ interface MessageHandlerMap {
 interface FakeLarkChannel {
   sent: Array<{ chatId: string; content: unknown; options?: unknown }>;
   streams: unknown[];
+  streamedMarkdown: string[];
   botIdentity: { openId: string; name: string };
   rawClient: {
     request: ReturnType<typeof vi.fn>;
@@ -51,6 +52,7 @@ interface FakeLarkChannel {
     };
     im: {
       v1: {
+        chat: { get: ReturnType<typeof vi.fn> };
         message: {
           get: ReturnType<typeof vi.fn>;
         };
@@ -294,6 +296,7 @@ describe('sender identity in bridge_context', () => {
     const h = await createHarness({
       chatPolicies: { oc_chat: { responseMode, ambientLevel: 'balanced' } },
     });
+    h.profileConfig.agentKind = eventType === 'final_text' ? 'codex' : 'claude';
     const summary = [
       '## 今天活动总结',
       '**总提交：19 次**',
@@ -316,9 +319,9 @@ describe('sender identity in bridge_context', () => {
       mentionedBot: false,
     }));
 
-    await waitFor(() => h.channel.sent.length === 1);
-    expect(lastMarkdown(h.channel)).toContain(summary);
-    expect(h.channel.streams).toHaveLength(0);
+    await waitFor(() => h.channel.sent.length === 1 || h.channel.streamedMarkdown.some((body) => body.includes(summary)));
+    expect(lastReply(h.channel)).toContain(summary);
+    expect(h.channel.streams).toHaveLength(responseMode === 'always' && eventType === 'text' ? 1 : 0);
   });
 
   it('keeps the explicit no-reply control response out of the chat', async () => {
@@ -583,6 +586,92 @@ describe('sender identity in bridge_context', () => {
     for (const release of releases.splice(0)) release();
     await Promise.all(pending);
     expect(h.agent.runOptions).toHaveLength(0);
+  });
+
+  it.each(['mention-only', 'ambient', 'always'] as const)(
+    'treats a one-user one-bot group as a direct conversation in %s mode',
+    async (responseMode) => {
+      const h = await createHarness({
+        chatPolicies: { oc_chat: { responseMode, ambientLevel: 'quiet' } },
+      });
+      h.channel.rawClient.im.v1.chat.get.mockResolvedValue({
+        data: { user_count: '1', bot_count: '1' },
+      });
+      h.agent.setEvents([
+        { type: 'text', delta: '不需要回复。' },
+        { type: 'done', terminationReason: 'normal' },
+      ]);
+      const ambientDecisionRunner = vi.fn(async () => ({ respond: false, reason: 'not-needed' }));
+      await startTestBridge(h, { ambientDecisionRunner });
+
+      await h.channel.handlers.message?.(message({
+        messageId: 'om_user_bot_pair', content: '你好', mentionedBot: false,
+      }));
+
+      await waitFor(() => h.channel.streamedMarkdown.some((body) => body.includes('不需要回复。')));
+      expect(lastReply(h.channel)).toContain('不需要回复。');
+      expect(ambientDecisionRunner).not.toHaveBeenCalled();
+      expect(h.agent.runOptions[0]?.prompt).not.toContain('未 @ 自动检查');
+      expect(h.agent.runOptions[0]?.prompt).not.toContain('[[NO_REPLY]]');
+      expect(h.agent.runOptions[0]?.prompt).toContain('只有你和一位用户');
+    },
+  );
+
+  it('restores the configured policy as soon as another person joins', async () => {
+    const h = await createHarness({
+      chatPolicies: { oc_chat: { responseMode: 'mention-only' } },
+    });
+    h.channel.rawClient.im.v1.chat.get
+      .mockResolvedValueOnce({ data: { user_count: '1', bot_count: '1' } })
+      .mockResolvedValueOnce({ data: { user_count: '2', bot_count: '1' } });
+    h.agent.setEvents([
+      { type: 'text', delta: '你好！' },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+    await startTestBridge(h);
+    await h.channel.handlers.message?.(message({
+      messageId: 'om_before_join', content: '你好', mentionedBot: false,
+    }));
+    await waitFor(() => h.channel.streamedMarkdown.some((body) => body.includes('你好！')));
+
+    await h.channel.handlers.message?.(message({
+      messageId: 'om_after_join', content: '你好', mentionedBot: false,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    expect(h.agent.runOptions).toHaveLength(1);
+    expect(h.channel.rawClient.im.v1.chat.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not treat bot-authored messages as direct user requests', async () => {
+    const h = await createHarness({ chatPolicies: { oc_chat: { responseMode: 'mention-only' } } });
+    h.channel.rawClient.im.v1.chat.get.mockResolvedValue({
+      data: { user_count: '1', bot_count: '1' },
+    });
+    await startTestBridge(h);
+    await h.channel.handlers.message?.(message({
+      messageId: 'om_bot_message', content: '你好', rawSenderType: 'app', mentionedBot: false,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    expect(h.agent.runOptions).toHaveLength(0);
+    expect(h.channel.rawClient.im.v1.chat.get).not.toHaveBeenCalled();
+  });
+
+  it('always mode delivers replies without opt-out instructions or filtering', async () => {
+    const h = await createHarness({ chatPolicies: { oc_chat: { responseMode: 'always' } } });
+    h.agent.setEvents([
+      { type: 'text', delta: '不需要回复。' },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message({
+      messageId: 'om_always_direct', content: '说明一下“不需要回复”的意思', mentionedBot: false,
+    }));
+
+    await waitFor(() => h.channel.streamedMarkdown.some((body) => body.includes('不需要回复。')));
+    expect(lastReply(h.channel)).toContain('不需要回复。');
+    expect(h.agent.runOptions[0]?.prompt).not.toContain('未 @ 自动检查');
+    expect(h.agent.runOptions[0]?.prompt).not.toContain('[[NO_REPLY]]');
   });
 
   it('queues every unmentioned group message in always mode without ambient decision', async () => {
@@ -903,10 +992,12 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
   const handlers: MessageHandlerMap = {};
   const sent: FakeLarkChannel['sent'] = [];
   const streams: unknown[] = [];
+  const streamedMarkdown: string[] = [];
   return {
     handlers,
     sent,
     streams,
+    streamedMarkdown,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -926,6 +1017,9 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
       },
       im: {
         v1: {
+          chat: {
+            get: vi.fn(async () => ({ data: { user_count: '3', bot_count: '1' } })),
+          },
           message: {
             get: vi.fn(async () => ({ data: { items: [] } })),
           },
@@ -954,7 +1048,7 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
     async stream(_chatId, input) {
       streams.push(input);
       if (isMarkdownStreamInput(input)) {
-        await input.markdown({ setContent: async () => {} });
+        await input.markdown({ setContent: async (body) => { streamedMarkdown.push(body); } });
       }
     },
   };
@@ -999,6 +1093,10 @@ function controlledAmbientRun(opts: AgentRunOptions, releases: Array<() => void>
       return true;
     },
   };
+}
+
+function lastReply(channel: FakeLarkChannel): string {
+  return channel.sent.length > 0 ? lastMarkdown(channel) : channel.streamedMarkdown.at(-1) ?? '';
 }
 
 function lastMarkdown(channel: FakeLarkChannel): string {

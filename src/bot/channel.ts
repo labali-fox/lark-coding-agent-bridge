@@ -71,6 +71,7 @@ import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
 import { ChatModeCache, type ChatMode } from './chat-mode-cache';
+import { isUserBotPair } from './group-conversation';
 import { handleCommentMention } from './comments';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
@@ -213,6 +214,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
   const chatModeCache = new ChatModeCache();
+  // Retain the intake decision for the exact messages being batched, without
+  // changing the SDK's mentionedBot flag or retaining old chat membership.
+  const directGroupMessages = new WeakSet<NormalizedMessage>();
   // Concurrency cap — reads `preferences.maxConcurrentRuns` on each acquire,
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
@@ -376,6 +380,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           activePolicyFingerprints,
           lastRunModelByScope,
           markdownStreamingState,
+          directGroupMessages,
           scope,
           mode,
         });
@@ -411,6 +416,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           historyStore,
           ambientRecent,
           ambientDecisionRunner,
+          directGroupMessages,
         }),
       ).catch((err) => log.fail('intake', err));
     },
@@ -690,6 +696,7 @@ interface IntakeDeps {
   historyStore?: ChatHistoryStore;
   ambientRecent: Map<string, AmbientDecisionMessage[]>;
   ambientDecisionRunner: AmbientDecisionRunner;
+  directGroupMessages: WeakSet<NormalizedMessage>;
 }
 
 type LogThreadModeOverride = (input: {
@@ -716,6 +723,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     historyStore,
     ambientRecent,
     ambientDecisionRunner,
+    directGroupMessages,
   } = deps;
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
@@ -815,7 +823,14 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     rememberAmbientMessage(ambientRecent, scope, ambientMessage);
   }
 
-  if (msg.chatType !== 'p2p' && !msg.mentionedBot) {
+  const directGroupConversation = msg.chatType !== 'p2p' && !msg.mentionedBot &&
+    senderTypeOf(msg) !== 'bot' && await isUserBotPair(channel, msg.chatId);
+  if (directGroupConversation) {
+    directGroupMessages.add(emsg);
+    log.info('intake', 'direct-user-bot-pair', { scope });
+  }
+
+  if (msg.chatType !== 'p2p' && !msg.mentionedBot && !directGroupConversation) {
     const responseMode = getChatResponseMode(controls.cfg, msg.chatId);
     if (responseMode.mode === 'mention-only') {
       log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
@@ -1045,6 +1060,7 @@ interface RunBatchDeps {
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
   markdownStreamingState: MarkdownStreamingState;
+  directGroupMessages: WeakSet<NormalizedMessage>;
   scope: string;
   mode: ChatMode;
 }
@@ -1068,6 +1084,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     activePolicyFingerprints,
     lastRunModelByScope,
     markdownStreamingState,
+    directGroupMessages,
     scope,
     mode,
   } = deps;
@@ -1157,8 +1174,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const prevModel = lastRunModelByScope.get(scope);
   const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
   lastRunModelByScope.set(scope, modelSelection);
-  const ambientAutoRun = isUnmentionedGroupAutoRun(batch);
+  const directGroupConversation = batch.some((msg) => directGroupMessages.has(msg));
+  const ambientAutoRun = isUnmentionedGroupAutoRun(batch) && !directGroupConversation &&
+    getChatResponseMode(controls.cfg, chatId).mode === 'ambient';
   const extraInstructions = [
+    ...(directGroupConversation
+      ? ['当前群聊里只有你和一位用户。用户的消息就是在对你说话，请直接回应，不要再判断是否需要参与。']
+      : []),
     ...(modelSwitched
       ? [
           `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
